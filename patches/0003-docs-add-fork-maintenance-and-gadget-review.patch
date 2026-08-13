@@ -1,0 +1,376 @@
+From 3106aca96ea2edae7cf2ce372093a0be2ff4c65c Mon Sep 17 00:00:00 2001
+From: Dustin Scott <dscott98@gmail.com>
+Date: Tue, 11 Aug 2026 08:34:23 -0700
+Subject: [PATCH 3/3] docs: add fork maintenance and gadget review
+
+---
+ DOWNSTREAM.md                         | 141 +++++++++++++++++
+ docs/gadgets-implementation-review.md | 208 ++++++++++++++++++++++++++
+ 2 files changed, 349 insertions(+)
+ create mode 100644 DOWNSTREAM.md
+ create mode 100644 docs/gadgets-implementation-review.md
+
+diff --git a/DOWNSTREAM.md b/DOWNSTREAM.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0461f68d55ac2dde9d2455b4c683193c81cfe2f
+--- /dev/null
++++ b/DOWNSTREAM.md
+@@ -0,0 +1,141 @@
++# Maintaining this Cloudflare OS fork
++
++This repository is a downstream fork of Cloudflare OS with a deployment-specific AI Gateway custom-model feature.
++
++## Remote and branch layout
++
++- `upstream` — `https://github.com/cloudflare/cloudflare-os.git`; Cloudflare's source. Never push here.
++- `origin` — `https://github.com/dscott98/cloudflare-os.git`; this fork.
++- `custom/main` — the maintained downstream integration branch. It contains the custom feature on top of upstream.
++- `release-*` tags — immutable deployed revisions.
++
++The initial downstream feature commit is:
++
++```text
++3835c6d feat: add deployment AI Gateway custom models
++```
++
++## Normal development
++
++Never work directly on the local `main` branch. Start a feature branch from `custom/main`:
++
++```bash
++git switch custom/main
++git pull --ff-only origin custom/main
++git switch -c feature/<short-description>
++```
++
++When the work is reviewed and tested, commit it and push the feature branch:
++
++```bash
++git add <intended-files>
++git diff --cached
++git commit -m "<meaningful description>"
++git push -u origin HEAD
++```
++
++Merge it into `custom/main` through a pull request on the fork. Do not push directly to `main`.
++
++## Before committing
++
++Never use `git add -A` in this repository. Add intended files explicitly, then inspect the staged diff:
++
++```bash
++git diff --cached --check
++git diff --cached
++```
++
++Local environment files such as `.env.CF` are ignored. Do not force-add `.env*`, `.dev.vars*`, or `wrangler.dev.jsonc` files.
++
++## Updating from Cloudflare upstream
++
++Run this whenever you choose to adopt the latest upstream `main`:
++
++```bash
++# 1. Start from a clean downstream branch.
++git switch custom/main
++git status --short
++
++# 2. Download upstream changes. This does not modify working files.
++git fetch upstream --tags
++
++# 3. Preserve a local reference to the pre-update branch.
++git branch backup/custom-main-before-update
++
++# 4. Replay downstream commits onto the new upstream main.
++git rebase upstream/main
++```
++
++### If Git reports a conflict
++
++1. See which files conflict:
++
++   ```bash
++   git status
++   ```
++
++2. Open each conflicted file. Resolve the sections marked:
++
++   ```text
++   <<<<<<<
++   =======
++   >>>>>>>
++   ```
++
++3. Preserve both the new upstream behavior and the downstream custom-model feature. Pay particular attention to:
++
++   ```text
++   packages/workshop-shared/src/api.ts
++   packages/workshop-backend/src/admin-config.ts
++   packages/workshop-backend/src/admin-settings.ts
++   packages/workshop-backend/src/user.ts
++   packages/workshop-backend/src/ai-models.ts
++   packages/workshop-backend/src/server.ts
++   ```
++
++4. Mark each resolved file and continue:
++
++   ```bash
++   git add <resolved-file>
++   git rebase --continue
++   ```
++
++5. If the rebase becomes confusing, safely return to the state before it began:
++
++   ```bash
++   git rebase --abort
++   ```
++
++## Verify an upstream update
++
++After a successful rebase:
++
++```bash
++pnpm lint && pnpm build && pnpm test
++
++git range-diff \
++  upstream/main...backup/custom-main-before-update \
++  upstream/main...custom/main
++```
++
++`range-diff` shows whether rebasing unexpectedly changed the downstream patch.
++
++If verification succeeds, update the fork. Rebasing creates new commit IDs, so this command is expected:
++
++```bash
++git push --force-with-lease origin custom/main
++```
++
++`--force-with-lease` refuses to overwrite an unexpected remote update. Never force-push a release tag or release branch.
++
++## Creating a deployable release
++
++After testing the exact revision to deploy:
++
++```bash
++git switch custom/main
++git tag release-YYYY-MM-DD
++git push origin release-YYYY-MM-DD
++```
++
++Deploy that tag/commit, not an unrecorded moving branch head.
+diff --git a/docs/gadgets-implementation-review.md b/docs/gadgets-implementation-review.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..7910c7841e35f832ee07028b1a59dd6b9dd9a1fe
+--- /dev/null
++++ b/docs/gadgets-implementation-review.md
+@@ -0,0 +1,208 @@
++# Gadgets implementation review
++
++## What a Gadget is
++
++A **Gadget** is a private, full-stack personal app—not a public SaaS endpoint.
++
++It has:
++
++- `server.js`: a Cloudflare Durable Object class exported as `Gadget`
++- `client.js`: browser UI JavaScript, rendered in a sandboxed iframe
++- optional supporting `.js` modules and `README.md`
++- private Durable Object storage
++- explicitly granted external-resource bindings
++
++Important terminology: `openGadget()` and `GadgetMetadata` are historical names for a **workspace**. A workspace now contains zero or more Gadget workpieces, plus chats, Gatekeeper connections, sharing, and code history.
++
++## Runtime architecture
++
++```text
++Browser Workshop UI
++  └─ persistent Cap’n Web WebSocket RPC
++       └─ Workshop backend
++            └─ one Overseer Durable Object per workspace
++                 ├─ Yjs source-code history, chats, sharing, bindings
++                 ├─ gadget registry
++                 ├─ Gatekeeper facets / approval queue
++                 └─ one Dynamic Worker Durable Object facet per Gadget
++                      ├─ server.js
++                      ├─ private DO storage
++                      └─ explicitly injected bindings only
++
++Sandboxed iframe
++  └─ client.js ↔ MessagePort Cap’n Web RPC ↔ Gadget server facet
++```
++
++Core implementation locations:
++
++- Shared RPC contract: `packages/workshop-shared/src/api.ts`
++- Workspace kernel and gadget runtime: `packages/workshop-backend/src/overseer.ts`
++- Agent tools and Gadget authoring instructions: `packages/workshop-backend/src/agent.ts`
++- Public/authenticated workspace creation: `packages/workshop-backend/src/server.ts`
++- Iframe sandbox and RPC handshake: `packages/workshop-frontend/src/GadgetUI.tsx`
++- Full editor and multi-Gadget picker: `packages/workshop-frontend/src/GadgetEditor.tsx`
++
++## How source and state work
++
++A Gadget’s **source code** is stored in the workspace’s Yjs document.
++
++- Each Gadget has its own named Yjs root containing files.
++- Code updates are versioned, replayable, collaboratively editable, and may be proposed in a chat before acceptance.
++- Each Gadget’s **runtime state** belongs in its Durable Object storage, not memory.
++- Each Gadget gets a Dynamic Worker facet named independently from other Gadgets, so changing/testing Gadget A restarts A—not Gadget B.
++
++A newly agent-created Gadget is initially **provisional** to that chat. Its code, creation, and new bindings become permanent only when the user accepts the chat’s proposed changes. Reverting removes it.
++
++## How to build one
++
++### Use the built-in agent
++
++A typical request is simply:
++
++> “Make me a project tracker.”
++
++The agent should:
++
++1. Check available Blueprints.
++2. Call `createGadget(title, bindingName, blueprintId?)`.
++3. Write `server.js` and `client.js`.
++4. Test it through the preview.
++5. Present proposed changes for acceptance.
++
++A minimal manually authored Gadget is:
++
++```js
++// server.js
++import { DurableObject } from "cloudflare:workers";
++
++export class Gadget extends DurableObject {
++  greet(name) {
++    return `Hello, ${name}!`;
++  }
++}
++```
++
++```js
++// client.js
++const text = await gadget.greet("World");
++document.body.append(text);
++```
++
++There is no `index.html`, no public `fetch()` handler, and no normal deployment step per Gadget.
++
++### Build manually in the editor
++
++Use the workspace’s **Code** tab to edit files. The frontend syncs Yjs updates to the Overseer; the runtime loader rebuilds the relevant Gadget facet when needed.
++
++For persistent state, use normal Durable Object storage APIs in `server.js`. For real-time collaboration, clients can pass Cap’n Web callbacks to server subscription methods.
++
++## How integrations work
++
++A Gadget starts with access to nothing.
++
++External services are represented by **Gatekeepers**, not raw API keys or unrestricted network access.
++
++```text
++User connects a resource
++  → Gatekeeper capability is created in the workspace
++  → agent may use it temporarily in chat env.NAME
++  → agent calls setGadgetBinding() only if Gadget code needs it persistently
++  → Gadget server sees it as this.env.NAME
++```
++
++This distinction matters:
++
++- The agent’s `executeCode` environment is **chat-scoped**.
++- A Gadget’s `this.env` is **Gadget-scoped**.
++- Giving the agent access to GitHub does not automatically give Gadget code GitHub access.
++
++Gatekeepers enforce narrow resource scope, OAuth/account handling, observation logging, and approval queues for side effects. Gadgets can call only capabilities explicitly bound into their environment.
++
++## Security model
++
++The implementation has strong, intentional boundaries:
++
++- Dynamic Gadget workers load with `globalOutbound: null`; Gadget code cannot use the public internet.
++- The browser UI is an iframe with a restrictive CSP and no network access.
++- Browser-to-server communication is capability RPC over a MessagePort.
++- Binding names are centrally validated against JavaScript reserved words and prototype-pollution names.
++- Shared “use” collaborators receive a restricted capability that can render/interact with the UI but cannot access source, chat, bindings, or management APIs.
++- A collaborator’s third-party accounts are not implicitly shared; added bindings use the adding collaborator’s account.
++- Sensitive observations can block sharing or require Gatekeeper observer verification.
++
++Relevant files:
++
++- Dynamic worker isolation: `packages/workshop-backend/src/overseer.ts`
++- Iframe CSP: `packages/workshop-frontend/src/GadgetUI.tsx`
++- Sharing model: `docs/sharing.md`
++- Observer/information-flow design: `docs/observers.md`
++
++## Blueprints and formats
++
++A **Blueprint** is a reusable Gadget source snapshot.
++
++It includes:
++
++- source files;
++- binding requirements and guidance;
++- metadata, author, version, and optional screenshot.
++
++It does **not** include:
++
++- runtime database/storage;
++- credentials or live Gatekeeper connections;
++- chat/edit history.
++
++Users can publish, share by link, export/import `.gadget` archives, or instantiate a Blueprint after configuring their own bindings.
++
++A **format** is an admin-curated Blueprint presented as “New Doc”, “New Slides”, etc. Bundled formats live in:
++
++```text
++packages/workshop-backend/format-blueprints/
++```
++
++To update one, build it in Workshop, export it, then import it:
++
++```bash
++pnpm import:format-blueprint ~/Downloads/MyExport.gadget format.document
++```
++
++For a fork, prefer `FORMAT_BLUEPRINTS_DIR` to maintain a separate format directory rather than modifying the upstream set. See:
++
++```text
++packages/workshop-backend/format-blueprints/README.md
++docs/blueprints.md
++```
++
++## Review findings
++
++### [P1] Core Gadget lifecycle lacks active end-to-end coverage
++
++There are no active backend tests exercising `createGadget`, Dynamic Worker loading, provisional Gadget acceptance/revert, or Blueprint-to-multi-Gadget instantiation. The existing RPC integration suite at `packages/workshop-backend/__integration__/open-gadget-rpc.test.ts` is currently `describe.skip(...)`.
++
++This is the most important gap because multi-Gadget state crosses Yjs, Durable Object storage, Dynamic Worker facets, RPC capabilities, and chat replay. Add integration coverage before making major changes in this area.
++
++### [P2] The kernel seam is very large
++
++The main implementation is concentrated in:
++
++```text
++packages/workshop-backend/src/overseer.ts  # ~9.5k lines
++packages/workshop-backend/src/agent.ts     # ~3.2k lines
++```
++
++The architecture is coherent, but these will be recurring upstream-rebase conflict zones. Keep custom Gadget behavior in narrow helpers/tests rather than editing loader, replay, or capability code casually.
++
++### [P2] Workspace sharing is not per-Gadget sharing
++
++A workspace may contain many Gadgets, but sharing remains workspace-wide. A collaborator granted access can access all non-pending Gadgets in that workspace according to their role. If users need to share only one app, create it in its own workspace or share a Blueprint instead.
++
++### [P2] Persistent callbacks have a multi-Gadget limitation
++
++`ctx.restore()` calls originating from agent `executeCode` currently restore against the default/first Gadget. Avoid designing multi-Gadget automation where persistent callbacks must belong to a specific non-default Gadget until that TODO is resolved.
++
++## Security sweep
++
++- No tracked `.env`, certificate, key, or database files found.
++- No permissive CORS or disabled TLS-verification patterns found.
++- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
+-- 
+2.53.0
+

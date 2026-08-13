@@ -1,0 +1,1656 @@
+From c5be509ca8f0df6fdfd5ef3615ab099ff1ca1025 Mon Sep 17 00:00:00 2001
+From: Dustin Scott <dscott98@gmail.com>
+Date: Sat, 8 Aug 2026 19:00:57 -0700
+Subject: [PATCH 1/3] feat: add deployment AI Gateway custom models
+
+---
+ .gitignore                                    |   1 +
+ .../__tests__/admin-config.test.ts            |  29 +-
+ .../__tests__/ai-models.test.ts               |  54 +++
+ .../__tests__/user-verifier.test.ts           |  24 ++
+ packages/workshop-backend/src/admin-config.ts |  96 ++++-
+ .../workshop-backend/src/admin-settings.ts    |  72 +++-
+ .../workshop-backend/src/agent-compaction.ts  |   3 +-
+ packages/workshop-backend/src/agent.ts        |   5 +-
+ packages/workshop-backend/src/ai-gateway.ts   |   4 +-
+ packages/workshop-backend/src/ai-models.ts    |  79 +++-
+ .../src/chat-attachment-pdf.ts                |   4 +-
+ .../src/chat-attachment-validation.ts         |   9 +-
+ packages/workshop-backend/src/server.ts       |  10 +-
+ packages/workshop-backend/src/user.ts         |  99 +++--
+ .../components/AiGatewayCustomModelsPanel.tsx | 144 ++++++++
+ .../src/routes/providers.tsx                  |  60 ++-
+ packages/workshop-shared/src/api.ts           |  49 ++-
+ plans/ai-gateway-custom-provider-models.md    | 349 ++++++++++++++++++
+ 18 files changed, 1041 insertions(+), 50 deletions(-)
+ create mode 100644 packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+ create mode 100644 plans/ai-gateway-custom-provider-models.md
+
+diff --git a/.gitignore b/.gitignore
+index 7ce4660ac77ab43dae1adf9649171e0b7be8d06b..47df166fee27975673bbffc112811837ecd72545 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -23,6 +23,7 @@ packages/workshop-backend/src/generated/browser-export-runtime.txt
+ 
+ # Local dev secrets (loaded by run-dev-server.js)
+ .dev.vars*
++.env.*
+ 
+ # Site-specific deployment configs.
+ wrangler.prod.jsonc
+diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
+index bd74bfc200238481c9441087d8e5710a731c8023..274aea3c78c8e10f70a33c869cb6c53c0db39517 100644
+--- a/packages/workshop-backend/__tests__/admin-config.test.ts
++++ b/packages/workshop-backend/__tests__/admin-config.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, expect, it } from "vitest";
+-import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
++import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, isAiGatewayCustomModelId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+ 
+ describe("parseAdminConfig", () => {
+   it("backfills fields missing from a config persisted before they existed", () => {
+@@ -51,6 +51,33 @@ describe("parseAdminConfig", () => {
+   });
+ });
+ 
++describe("AI Gateway custom model config", () => {
++  const model = {
++    id: "aig-custom:123e4567-e89b-12d3-a456-426614174000",
++    displayName: "Acme Code",
++    providerSlug: "acme-models",
++    modelId: "acme/code-1",
++    chatCompletionsPath: "v4/chat/completions",
++  };
++
++  it("keeps valid entries and drops malformed, duplicated, or legacy entries", () => {
++    let config = parseAdminConfig(JSON.stringify({
++      aiGatewayCustomModels: [
++        model,
++        {...model, displayName: "duplicate ID"},
++        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174001"},
++        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174002", chatCompletionsPath: "/v1/chat/completions"},
++        {id: "aig-custom:not-a-uuid", displayName: "bad", providerSlug: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
++      ],
++    }));
++
++    expect(config.aiGatewayCustomModels).toEqual([model]);
++    expect(isAiGatewayCustomModelId(model.id)).toBe(true);
++    expect(isAiGatewayCustomModelId("aig-custom:legacy")).toBe(true);
++    expect(isAiGatewayCustomModelId("model")).toBe(false);
++  });
++});
++
+ describe("reorderFormats", () => {
+   let promoted = [
+     { blueprintId: "a", enabled: true },
+diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
+index cfad0d651f93c4b748048ecae7acea939d821efa..230fdb764ffa23e399c7bc55f925ce97fe80738f 100644
+--- a/packages/workshop-backend/__tests__/ai-models.test.ts
++++ b/packages/workshop-backend/__tests__/ai-models.test.ts
+@@ -32,6 +32,13 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
+   apiToken: "ignored-in-gateway-mode",
+ };
+ 
++const CUSTOM_PROVIDER_CONFIG: AiModelConfig = {
++  provider: "ai-gateway-custom",
++  providerSlug: "acme-models",
++  model: "acme-code-1",
++  chatCompletionsPath: "v4/chat/completions",
++};
++
+ function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
+   return {
+     CF_AI_GATEWAY: "platform-gateway",
+@@ -188,6 +195,53 @@ describe("getModel AI Gateway routing", () => {
+     });
+   }, 15000);
+ 
++  it("routes a deployment custom model through its configured endpoint, not a user's gateway", async () => {
++    const handle = getModel(env(), CUSTOM_PROVIDER_CONFIG, INITIATOR, {
++      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
++      metadata: { source: "chat" },
++    });
++
++    expect(handle.model.api).toBe("openai-completions");
++    expect(handle.model.id).toBe("acme-code-1");
++    expect(handle.model.baseUrl).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
++        "custom-acme-models/v4");
++    expect(handle.aiGatewayLogRoute).toEqual({
++      gateway: "platform-gateway",
++      accountId: "gateway-account-id",
++      apiToken: "gateway-token",
++    });
++    expect(handle.supportsPdfAttachments).toBe(true);
++
++    const request = await captureRequest(handle);
++    expect(request.url).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
++        "custom-acme-models/v4/chat/completions");
++    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
++    expect(request.headers.get("authorization")).toBeNull();
++    expect(request.headers.get("x-api-key")).toBeNull();
++    expect(JSON.parse(request.body).model).toBe("acme-code-1");
++  }, 15000);
++
++  it("sends custom-model PDFs as OpenAI Chat Completions image data URLs", async () => {
++    const handle = getModel(env(), CUSTOM_PROVIDER_CONFIG, INITIATOR);
++    const stream = await handle.stream(handle.model, {
++      messages: [{
++        role: "user",
++        content: [{type: "image", data: "JVBERi0=", mimeType: "application/pdf"}],
++        timestamp: 0,
++      }],
++    }, {fetch: fetchStub, maxRetries: 0});
++    expect((await stream.result()).stopReason).toBe("error");
++
++    const request = capturedRequests[0];
++    let content = JSON.parse(request.body).messages[0].content;
++    expect(content).toContainEqual({
++      type: "image_url",
++      image_url: {url: "data:application/pdf;base64,JVBERi0="},
++    });
++  }, 15000);
++
+   it("speaks the provider's native API on a connected user's Gateway", async () => {
+     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
+       userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+diff --git a/packages/workshop-backend/__tests__/user-verifier.test.ts b/packages/workshop-backend/__tests__/user-verifier.test.ts
+index 3c2dc9e7481bf6e429989e690b6c32db0d2d3b02..9b673ed00a083ad2a2433b623f636fb425d796ce 100644
+--- a/packages/workshop-backend/__tests__/user-verifier.test.ts
++++ b/packages/workshop-backend/__tests__/user-verifier.test.ts
+@@ -24,6 +24,30 @@ function makeUserWithAccount(vendorId: string) {
+   return { user, verifier, verifierRequests: () => verifierRequests };
+ }
+ 
++describe("UserDurableObject.getExternalMessageChatContext", () => {
++  it("sends a deployment model ID to the canonical resolver instead of falling back", async () => {
++    const user = Object.create(UserDurableObject.prototype) as UserDurableObject;
++    const context = {profile: {type: "agent" as const, id: "user", name: "User"}};
++    let listModelsCalled = false;
++    let resolvedId: string | null | undefined;
++    Object.assign(user, {
++      listModels: async () => {
++        listModelsCalled = true;
++        return [];
++      },
++      getChatContext: async (modelId: string | null) => {
++        resolvedId = modelId;
++        return context;
++      },
++    });
++
++    const deletedId = "aig-custom:123e4567-e89b-12d3-a456-426614174000";
++    await expect(user.getExternalMessageChatContext(deletedId)).resolves.toBe(context);
++    expect(resolvedId).toBe(deletedId);
++    expect(listModelsCalled).toBe(false);
++  });
++});
++
+ describe("UserDurableObject.getVerifier", () => {
+   it("returns a verifier when the connected account belongs to the expected vendor", async () => {
+     const { user, verifier, verifierRequests } = makeUserWithAccount("notion");
+diff --git a/packages/workshop-backend/src/admin-config.ts b/packages/workshop-backend/src/admin-config.ts
+index 81a2b1ab60ca5505c93fd3a8a87fdbf12e173fbf..f84abf6cb604f850c90a49de24ca5d036b74b333 100644
+--- a/packages/workshop-backend/src/admin-config.ts
++++ b/packages/workshop-backend/src/admin-config.ts
+@@ -8,7 +8,7 @@
+ // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
+ // things *out*.
+ 
+-import { AmbientGatekeeperMode, BannerConfig, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, OutputFormatOffer, isAmbientGatekeeperMode, isBannerColor, isOutputIcon } from "@gadgets/workshop-shared/api";
++import { AdminAiGatewayCustomModel, AmbientGatekeeperMode, BannerConfig, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, OutputFormatOffer, isAmbientGatekeeperMode, isBannerColor, isOutputIcon } from "@gadgets/workshop-shared/api";
+ import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+ import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive.js";
+ 
+@@ -54,6 +54,9 @@ export type AdminConfig = {
+    * the deployment offers.
+    */
+   formats: FormatCuration[];
++
++  // Models supplied to every user through already-configured AI Gateway custom providers.
++  aiGatewayCustomModels: AdminAiGatewayCustomModel[];
+ };
+ 
+ /**
+@@ -91,6 +94,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+   disabledGatekeepers: [],
+   ambientGatekeeperModes: {},
+   formats: [],
++  aiGatewayCustomModels: [],
+ };
+ 
+ /**
+@@ -101,6 +105,95 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+ export const MAX_AGENT_HINT = 400;
+ 
+ // Accept a stored format entry only if it is well-formed.
++export const AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX = "aig-custom:";
++const MAX_CUSTOM_MODEL_DISPLAY_NAME = 120;
++const MAX_CUSTOM_MODEL_SLUG = 64;
++const MAX_CUSTOM_MODEL_ID = 256;
++const MAX_CUSTOM_MODEL_PATH = 256;
++const CUSTOM_MODEL_ID = new RegExp(
++    `^${AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`);
++const CUSTOM_PROVIDER_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
++const SAFE_PATH_SEGMENT = /^[A-Za-z0-9._~-]+$/;
++
++/** Whether an ID belongs to Workshop's reserved deployment-model namespace. */
++export function isAiGatewayCustomModelId(id: string): boolean {
++  return id.startsWith(AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX);
++}
++
++// Validate the persisted/admin-supplied entry. This returns a normalized copy rather than mutating
++// the input so the parser can safely drop malformed legacy entries.
++export function normalizeAiGatewayCustomModel(value: unknown): AdminAiGatewayCustomModel | undefined {
++  if (!value || typeof value !== "object") return undefined;
++  let {id, displayName, providerSlug, modelId, chatCompletionsPath} =
++      value as Partial<AdminAiGatewayCustomModel>;
++  if (typeof id !== "string" || !CUSTOM_MODEL_ID.test(id) ||
++      typeof displayName !== "string" || typeof providerSlug !== "string" ||
++      typeof modelId !== "string" || typeof chatCompletionsPath !== "string") {
++    return undefined;
++  }
++  displayName = displayName.trim();
++  providerSlug = providerSlug.trim();
++  modelId = modelId.trim();
++  chatCompletionsPath = chatCompletionsPath.trim();
++  if (!displayName || displayName.length > MAX_CUSTOM_MODEL_DISPLAY_NAME ||
++      !providerSlug || providerSlug.length > MAX_CUSTOM_MODEL_SLUG ||
++      !CUSTOM_PROVIDER_SLUG.test(providerSlug) || !modelId || modelId.length > MAX_CUSTOM_MODEL_ID ||
++      chatCompletionsPath.length > MAX_CUSTOM_MODEL_PATH || hasControlCharacters(displayName) ||
++      hasControlCharacters(modelId) || !isSafeChatCompletionsPath(chatCompletionsPath)) {
++    return undefined;
++  }
++  return {id, displayName, providerSlug, modelId, chatCompletionsPath};
++}
++
++/** Normalize a custom-model input or throw an error appropriate for the admin UI. */
++export function requireAiGatewayCustomModelInput(
++    input: Omit<AdminAiGatewayCustomModel, "id">): Omit<AdminAiGatewayCustomModel, "id"> {
++  let entry = normalizeAiGatewayCustomModel({id: `${AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX}` +
++      "00000000-0000-0000-0000-000000000000", ...input});
++  if (!entry) {
++    throw new Error("Invalid custom model name, provider slug, model ID, or Chat Completions path.");
++  }
++  return {
++    displayName: entry.displayName,
++    providerSlug: entry.providerSlug,
++    modelId: entry.modelId,
++    chatCompletionsPath: entry.chatCompletionsPath,
++  };
++}
++
++function hasControlCharacters(value: string): boolean {
++  for (let index = 0; index < value.length; ++index) {
++    let code = value.charCodeAt(index);
++    if (code <= 0x1f || code === 0x7f) return true;
++  }
++  return false;
++}
++
++function isSafeChatCompletionsPath(path: string): boolean {
++  if (path.startsWith("/") || path.includes("?") || path.includes("#") || path.includes("%") ||
++      hasControlCharacters(path)) return false;
++  let segments = path.split("/");
++  return segments.length >= 2 && segments.every(segment => SAFE_PATH_SEGMENT.test(segment)) &&
++      segments.at(-2) === "chat" && segments.at(-1) === "completions";
++}
++
++function parseAiGatewayCustomModels(value: unknown): AdminAiGatewayCustomModel[] {
++  if (!Array.isArray(value)) return [];
++  let entries: AdminAiGatewayCustomModel[] = [];
++  let ids = new Set<string>();
++  let routes = new Set<string>();
++  for (let rawEntry of value) {
++    let entry = normalizeAiGatewayCustomModel(rawEntry);
++    if (!entry || ids.has(entry.id)) continue;
++    let route = `${entry.providerSlug}\u0000${entry.modelId}\u0000${entry.chatCompletionsPath}`;
++    if (routes.has(route)) continue;
++    ids.add(entry.id);
++    routes.add(route);
++    entries.push(entry);
++  }
++  return entries;
++}
++
+ function parseFormats(value: unknown): FormatCuration[] {
+   if (!Array.isArray(value)) return [];
+   let formats: FormatCuration[] = [];
+@@ -313,6 +406,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
+       disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
+       ambientGatekeeperModes,
+       formats: parseFormats(p.formats),
++      aiGatewayCustomModels: parseAiGatewayCustomModels(p.aiGatewayCustomModels),
+     };
+   } catch {
+     return { ...DEFAULT_ADMIN_CONFIG };
+diff --git a/packages/workshop-backend/src/admin-settings.ts b/packages/workshop-backend/src/admin-settings.ts
+index ac50456ff1874794470bafadc8f644c88091b938..a857db42a3ea3ce45fa1fd72f093062ae5849a98 100644
+--- a/packages/workshop-backend/src/admin-settings.ts
++++ b/packages/workshop-backend/src/admin-settings.ts
+@@ -1,4 +1,4 @@
+-import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
++import { AdminAiGatewayCustomModel, AdminAiGatewayCustomModelInput, AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+ import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
+ import { DurableObject } from 'cloudflare:workers';
+ import { RpcTarget } from 'capnweb';
+@@ -6,8 +6,9 @@ import { validateRpc } from 'capnweb-validate';
+ import { collection, createTypedStorage } from '@gadgets/typed-storage';
+ import { createWorkshopLogger } from "./observability";
+ import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, sanitizeBlueprintOutput, serializeFeaturedBlueprints } from './blueprint-archive.js';
+-import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
++import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, isAiGatewayCustomModelId, requireAiGatewayCustomModelInput, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+ import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
++import { getAiGatewayConfig } from './ai-gateway.js';
+ import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
+ import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
+ import { UserDurableObject } from './user.js';
+@@ -16,6 +17,12 @@ import { FORMAT_BLUEPRINTS } from './generated/format-blueprints.js';
+ 
+ const logger = createWorkshopLogger("workshop.admin.settings");
+ 
++function sameCustomModelRoute(
++    left: AdminAiGatewayCustomModel, right: AdminAiGatewayCustomModel): boolean {
++  return left.providerSlug === right.providerSlug && left.modelId === right.modelId &&
++      left.chatCompletionsPath === right.chatCompletionsPath;
++}
++
+ function makeAdminSettingsStorage(storage: DurableObjectStorage) {
+   return createTypedStorage(storage, {
+     collections: {
+@@ -298,6 +305,54 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
+     return this.#mutateAdminConfig(config => ({ ...config, ...patch }));
+   }
+ 
++  #requireAiGateway(): void {
++    if (!getAiGatewayConfig(this.env)) {
++      throw new Error("A deployment AI Gateway must be configured before adding custom models.");
++    }
++  }
++
++  async createAiGatewayCustomModel(input: AdminAiGatewayCustomModelInput): Promise<void> {
++    this.#requireAiGateway();
++    let fields = requireAiGatewayCustomModelInput(input);
++    let entry: AdminAiGatewayCustomModel = {id: `aig-custom:${crypto.randomUUID()}`, ...fields};
++    await this.#mutateAdminConfig(config => {
++      if (config.aiGatewayCustomModels.some(model =>
++          model.id === entry.id || sameCustomModelRoute(model, entry))) {
++        throw new Error("A custom model with that provider, model ID, and endpoint path already exists.");
++      }
++      return {...config, aiGatewayCustomModels: [...config.aiGatewayCustomModels, entry]};
++    });
++  }
++
++  async updateAiGatewayCustomModel(id: string, input: AdminAiGatewayCustomModelInput): Promise<void> {
++    this.#requireAiGateway();
++    if (!isAiGatewayCustomModelId(id)) throw new Error("Custom model not found.");
++    let fields = requireAiGatewayCustomModelInput(input);
++    await this.#mutateAdminConfig(config => {
++      let index = config.aiGatewayCustomModels.findIndex(model => model.id === id);
++      if (index < 0) throw new Error("Custom model not found.");
++      let replacement: AdminAiGatewayCustomModel = {id, ...fields};
++      if (config.aiGatewayCustomModels.some((model, candidate) =>
++          candidate !== index && sameCustomModelRoute(model, replacement))) {
++        throw new Error("A custom model with that provider, model ID, and endpoint path already exists.");
++      }
++      let aiGatewayCustomModels = [...config.aiGatewayCustomModels];
++      aiGatewayCustomModels[index] = replacement;
++      return {...config, aiGatewayCustomModels};
++    });
++  }
++
++  async deleteAiGatewayCustomModel(id: string): Promise<void> {
++    if (!isAiGatewayCustomModelId(id)) throw new Error("Custom model not found.");
++    await this.#mutateAdminConfig(config => {
++      let aiGatewayCustomModels = config.aiGatewayCustomModels.filter(model => model.id !== id);
++      if (aiGatewayCustomModels.length === config.aiGatewayCustomModels.length) {
++        throw new Error("Custom model not found.");
++      }
++      return {...config, aiGatewayCustomModels};
++    });
++  }
++
+   /**
+    * Read all admin-managed settings for the admin UI in one call: the stored config plus the live
+    * resource catalog (every bound gatekeeper's resource types annotated with their enabled state).
+@@ -319,6 +374,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
+       accentColor: config.accentColor,
+       resourceVendors: await this.#listResourceConfig(config, adminUserId),
+       formats: await this.#listFormatConfig(config),
++      aiGatewayCustomModels: config.aiGatewayCustomModels,
+     };
+   }
+ 
+@@ -655,4 +711,16 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
+   setFormatOrder(blueprintIds: string[]): Promise<void> {
+     return this.admin.setFormatOrder(blueprintIds);
+   }
++
++  createAiGatewayCustomModel(input: AdminAiGatewayCustomModelInput): Promise<void> {
++    return this.admin.createAiGatewayCustomModel(input);
++  }
++
++  updateAiGatewayCustomModel(id: string, input: AdminAiGatewayCustomModelInput): Promise<void> {
++    return this.admin.updateAiGatewayCustomModel(id, input);
++  }
++
++  deleteAiGatewayCustomModel(id: string): Promise<void> {
++    return this.admin.deleteAiGatewayCustomModel(id);
++  }
+ }
+diff --git a/packages/workshop-backend/src/agent-compaction.ts b/packages/workshop-backend/src/agent-compaction.ts
+index 590917f41cda7fad106de1ae11339d612d884fc3..c9b07e37e2a12180e8e72505e8538cfeb0d95e1f 100644
+--- a/packages/workshop-backend/src/agent-compaction.ts
++++ b/packages/workshop-backend/src/agent-compaction.ts
+@@ -27,7 +27,8 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
+  */
+ export function getModelTokenLimits(config: AiModelConfig):
+     {inputBudget: number, maxOutputTokens?: number} {
+-  let model = SUGGESTED_MODELS[config.provider][config.model];
++  let model = config.provider === "ai-gateway-custom"
++      ? undefined : SUGGESTED_MODELS[config.provider][config.model];
+   let maxOutputTokens = model?.outputLimit ??
+       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
+   return {
+diff --git a/packages/workshop-backend/src/agent.ts b/packages/workshop-backend/src/agent.ts
+index 23a79d9ed0434be0a658f615daf459a137ed5dc1..6fbfbad84c0904efde456e7e0d880ad8f4fe7c7f 100644
+--- a/packages/workshop-backend/src/agent.ts
++++ b/packages/workshop-backend/src/agent.ts
+@@ -1,5 +1,5 @@
+ import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+-import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
++import { PDF_MIME_TYPE } from './chat-attachment-pdf';
+ import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
+ import { createWorkshopLogger } from "./observability";
+ import * as Y from "yjs";
+@@ -1555,8 +1555,7 @@ export async function runAgent(
+                     type: "text",
+                     text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
+                   }];
+-                } else if (attachment.mimeType === PDF_MIME_TYPE &&
+-                           modelApiSupportsPdfAttachments(handle.model.api)) {
++                } else if (attachment.mimeType === PDF_MIME_TYPE && handle.supportsPdfAttachments) {
+                   // pi has no file/document content part, so a PDF rides an ImageContent part;
+                   // the model handle rewrites it into the provider's native document block just
+                   // before the request goes out (see chat-attachment-pdf.ts). The text part
+diff --git a/packages/workshop-backend/src/ai-gateway.ts b/packages/workshop-backend/src/ai-gateway.ts
+index b06564088b46992d5a2077ee173ed1b7d283d010..20aba0380c326a11e351b66f77f28f1e6dc13e2c 100644
+--- a/packages/workshop-backend/src/ai-gateway.ts
++++ b/packages/workshop-backend/src/ai-gateway.ts
+@@ -1,4 +1,4 @@
+-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
++import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
+ import { UserAiModelRecord } from "./user.js";
+ 
+ // The model used for quick tasks like title generation when AI Gateway mode is active.
+@@ -63,7 +63,7 @@ export class AiGatewayConfig {
+         return {
+           profile: { type: "agent", id: modelId, name: models[modelId].name },
+           config: {
+-            provider: provider as AiModelConfig["provider"],
++            provider: provider as AiModelProvider,
+             model: modelId,
+             // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
+             // reads the real values from env. We set them to empty strings here to satisfy
+diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
+index 7f7ea8de8232688f87a7f8ed3879f3c30517caf7..6447a3c4cba60130a554fef02cbe50d622d0efb1 100644
+--- a/packages/workshop-backend/src/ai-models.ts
++++ b/packages/workshop-backend/src/ai-models.ts
+@@ -19,7 +19,10 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
+   from "@gadgets/workshop-shared/api";
+ import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
+ import { completeText } from "./ai-invoke.js";
+-import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
++import { bridgePdfAttachments, modelApiSupportsPdfAttachments } from "./chat-attachment-pdf.js";
++import { createWorkshopLogger } from "./observability";
++
++const logger = createWorkshopLogger("workshop.ai.models");
+ 
+  /**
+   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
+@@ -93,6 +96,12 @@ export type ModelHandle = {
+    */
+   aiGatewayLogRoute?: AiGatewayLogRoute;
+ 
++  /**
++   * Whether chat replay may carry PDFs through this handle. Custom OpenAI-Completions models try
++   * the standard data-URL image payload; their upstream provider decides whether to accept it.
++   */
++  supportsPdfAttachments: boolean;
++
+   /**
+    * Status and AI Gateway log id of the most recent HTTP response observed by `stream`. Reset at
+    * the start of every request and set from pi's onResponse callback (which fires only once a
+@@ -134,6 +143,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
+     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
+     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
+     case "ollama": return undefined;
++    case "ai-gateway-custom": return undefined;
+     default: return undefined;
+   }
+ }
+@@ -143,7 +153,8 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
+ // gaps for models we don't list, and unknown models get conservative defaults.
+ function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
+     : { contextWindow: number, maxTokens: number } {
+-  const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
++  const suggested = config.provider === "ai-gateway-custom"
++      ? undefined : SUGGESTED_MODELS[config.provider]?.[config.model];
+   return {
+     contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
+     maxTokens: suggested?.outputLimit ??
+@@ -268,6 +279,7 @@ type HandleArgs = {
+   gatewayMetadata?: GatewayMetadata;
+   sessionAffinity?: string;
+   aiGatewayLogRoute?: AiGatewayLogRoute;
++  supportsPdfAttachments?: boolean;
+ };
+ 
+ function makeHandle(args: HandleArgs): ModelHandle {
+@@ -296,6 +308,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
+   const handle: ModelHandle = {
+     model: args.model,
+     aiGatewayLogRoute: args.aiGatewayLogRoute,
++    supportsPdfAttachments: args.supportsPdfAttachments ??
++        modelApiSupportsPdfAttachments(args.model.api),
+     stream: (model, context, { thinking = true, ...options } = {}) => {
+       // Never let a failed request read a previous request's response metadata.
+       handle.lastResponse = undefined;
+@@ -352,6 +366,14 @@ function makeHandle(args: HandleArgs): ModelHandle {
+ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+                          initiator: AiChatAuthorInfo,
+                          options: ModelRoutingOptions = {}): ModelHandle {
++  // Deployment catalog entries are never eligible for a connected user's default gateway: custom
++  // providers and their stored credentials belong to this deployment's configured gateway.
++  if (config.provider === "ai-gateway-custom") {
++    let gateway = getAiGatewayConfig(env);
++    if (!gateway) throw new Error("This deployment-managed model requires an AI Gateway.");
++    return getCustomModelViaGateway(gateway, config, initiator, options);
++  }
++
+   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
+   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
+   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
+@@ -371,6 +393,54 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+   return getModelDirect(config, options.sessionAffinity);
+ }
+ 
++function getCustomModelViaGateway(
++    gwConfig: AiGatewayConfig, config: Extract<AiModelConfig, {provider: "ai-gateway-custom"}>,
++    initiator: AiChatAuthorInfo, options: ModelRoutingOptions): ModelHandle {
++  let path = config.chatCompletionsPath.split("/");
++  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.providerSlug) || path.length < 2 ||
++      path.at(-2) !== "chat" || path.at(-1) !== "completions" ||
++      path.some(segment => !/^[A-Za-z0-9._~-]+$/.test(segment))) {
++    throw new Error("Invalid deployment custom-model route.");
++  }
++  let prefix = path.slice(0, -2).map(encodeURIComponent).join("/");
++  let gatewayBase = `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
++  let baseUrl = `${gatewayBase}/custom-${encodeURIComponent(config.providerSlug)}` +
++      (prefix ? `/${prefix}` : "");
++  // This contains only the public AI Gateway route, never its authorization token or upstream key.
++  logger.info("resolved AI Gateway custom-provider route", {
++    event: "ai_gateway.custom_model.route.resolved",
++    modelId: config.model,
++    path: `${baseUrl}/chat/completions`,
++  });
++  let model: Model<Api> = {
++    id: config.model,
++    name: config.model,
++    api: "openai-completions",
++    provider: "ai-gateway-custom",
++    baseUrl,
++    reasoning: false,
++    input: ["text", "image"],
++    cost: ZERO_COST,
++    ...modelTokenWindow(config, undefined),
++  };
++  return makeHandle({
++    model,
++    headers: {
++      "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
++      Authorization: null,
++      "x-api-key": null,
++    },
++    gatewayMetadata: buildMetadata(initiator, options.metadata),
++    sessionAffinity: options.sessionAffinity,
++    aiGatewayLogRoute: {
++      gateway: gwConfig.gateway,
++      accountId: gwConfig.accountId,
++      apiToken: gwConfig.apiToken,
++    },
++    supportsPdfAttachments: true,
++  });
++}
++
+ // Route inference through the user's own account (unified billing) via their account's default AI
+ // Gateway. Supports every provider AI Gateway serves, including Workers AI. Billed to the
+ // user's Cloudflare credits; no provider API key required.
+@@ -620,9 +690,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
+         apiKey: config.apiToken,
+         sessionAffinity,
+       });
+-    default:
+-      config.provider satisfies never;
+-      throw new Error(`Unknown provider "${config.provider}".`);
++    case "ai-gateway-custom":
++      throw new Error("Deployment-managed custom models cannot use direct provider routing.");
+   }
+ }
+ 
+diff --git a/packages/workshop-backend/src/chat-attachment-pdf.ts b/packages/workshop-backend/src/chat-attachment-pdf.ts
+index 17c37fb1a4e483cf022687701f55a333f9c41429..9c165fcaf1fde23e3b0391773a30afbec95d8fe4 100644
+--- a/packages/workshop-backend/src/chat-attachment-pdf.ts
++++ b/packages/workshop-backend/src/chat-attachment-pdf.ts
+@@ -17,7 +17,9 @@ import type { Api } from "@earendil-works/pi-ai";
+ //   with the same data URL. The filename is synthesized -- the payload no longer knows the
+ //   original name, which the replay instead surfaces in an adjacent text part.
+ // - openai-completions (Workers AI, Ollama): no document input exists; uploads are rejected
+-//   (chat-attachment-validation.ts) and replay degrades a PDF to a text marker.
++//   (chat-attachment-validation.ts) and replay degrades a PDF to a text marker. Deployment custom
++//   providers intentionally try that adapter's standard `image_url` data URL unchanged; whether a
++//   particular upstream accepts PDF MIME there is the provider's responsibility.
+ //
+ // Drop this bridge if pi gains a first-class document content type (upstream ask filed; see
+ // plans/pi-impl.md §8).
+diff --git a/packages/workshop-backend/src/chat-attachment-validation.ts b/packages/workshop-backend/src/chat-attachment-validation.ts
+index 4f236a67c9824d832548739e999bf01d095db0d1..6f2c4e5020179e1e6edbd42f0e0a5918c622b21e 100644
+--- a/packages/workshop-backend/src/chat-attachment-validation.ts
++++ b/packages/workshop-backend/src/chat-attachment-validation.ts
+@@ -1,5 +1,5 @@
+ import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
+-import type { AiModelConfig, AiModelProvider, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
++import type { AiModelConfig, ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
+ import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
+ 
+ // Bounds attachment storage and the bytes replayed into model requests.
+@@ -38,7 +38,10 @@ const ATTACHMENT_SUPPORT_BY_PROVIDER = {
+   google: isTextImageOrPdfMime,
+   cloudflare: isTextOrImageMime,
+   ollama: isTextOrImageMime,
+-} satisfies Record<AiModelProvider, (mimeType: string) => boolean>;
++  // Custom providers receive the OpenAI Chat Completions image data URL unchanged; a provider
++  // that does not accept application/pdf returns its own request error.
++  "ai-gateway-custom": isTextImageOrPdfMime,
++} satisfies Record<AiModelConfig["provider"], (mimeType: string) => boolean>;
+ 
+ function sanitizeChatAttachmentMimeType(mimeType: string | undefined): string {
+   if (!mimeType || /[\r\n]/.test(mimeType)) return "application/octet-stream";
+@@ -53,7 +56,7 @@ function sanitizeChatAttachmentName(name: string | undefined): string | undefine
+ 
+ /** Reject an attachment type that the selected provider cannot accept. */
+ export function assertChatAttachmentSupportedByProvider(
+-  provider: AiModelProvider | undefined,
++  provider: AiModelConfig["provider"] | undefined,
+   mimeType: string,
+   byteLength: number,
+ ): void {
+diff --git a/packages/workshop-backend/src/server.ts b/packages/workshop-backend/src/server.ts
+index daeb03ed3df6a1e227a0bc8e67c370569869dc45..78330c4005142da8eeacb71b6a2b03d02cce05ba 100644
+--- a/packages/workshop-backend/src/server.ts
++++ b/packages/workshop-backend/src/server.ts
+@@ -196,15 +196,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
+     return new Uint8Array(result);
+   }
+ 
+-  getAiConfig(): Promise<AiGatewayInfo> {
++  async getAiConfig(): Promise<AiGatewayInfo> {
+     let gwConfig = getAiGatewayConfig(this.env);
+     if (gwConfig) {
+-      return Promise.resolve({
++      return {
+         enabled: true,
+         enabledProviders: [...gwConfig.providers] as AiModelProvider[],
+-      });
++        deploymentModelIds: (await readAdminConfig(this.env)).aiGatewayCustomModels.map(
++            model => model.id),
++      };
+     } else {
+-      return Promise.resolve({ enabled: false });
++      return { enabled: false };
+     }
+   }
+ 
+diff --git a/packages/workshop-backend/src/user.ts b/packages/workshop-backend/src/user.ts
+index 0322d34b3de16b49d53c4307e35820cfb7c4962a..bbb1aa0309e8c97ac5186d48b25ae408ff08f203 100644
+--- a/packages/workshop-backend/src/user.ts
++++ b/packages/workshop-backend/src/user.ts
+@@ -10,7 +10,7 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
+ import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
+ import type { AdminSettings } from "./admin-settings.js";
+ import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
+-import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
++import { filterEnabledResources, isAiGatewayCustomModelId, isResourceDisabled, readAdminConfig } from "./admin-config.js";
+ import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+ 
+ const logger = createWorkshopLogger("workshop.user");
+@@ -77,6 +77,19 @@ export type UserChatContext = {
+   quickModel?: AiModelConfig;
+ }
+ 
++function deploymentCustomModelRecord(entry: Awaited<ReturnType<typeof readAdminConfig>>[
++    "aiGatewayCustomModels"][number]): UserAiModelRecord {
++  return {
++    profile: {type: "agent", id: entry.id, name: entry.displayName},
++    config: {
++      provider: "ai-gateway-custom",
++      model: entry.modelId,
++      providerSlug: entry.providerSlug,
++      chatCompletionsPath: entry.chatCompletionsPath,
++    },
++  };
++}
++
+ type LoginSessionRecord = {
+   tokenId: string,  // sha256 hash of token, hex-formatted
+   created: Date,
+@@ -525,10 +538,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+     this.storage.profile.put(profile);
+   }
+ 
++  async #deploymentCustomModels(): Promise<UserAiModelRecord[]> {
++    if (!getAiGatewayConfig(this.env)) return [];
++    return (await readAdminConfig(this.env)).aiGatewayCustomModels.map(deploymentCustomModelRecord);
++  }
++
++  async #deploymentCustomModel(id: string): Promise<UserAiModelRecord | undefined> {
++    if (!getAiGatewayConfig(this.env) || !isAiGatewayCustomModelId(id)) return undefined;
++    let entry = (await readAdminConfig(this.env)).aiGatewayCustomModels.find(model => model.id === id);
++    return entry && deploymentCustomModelRecord(entry);
++  }
++
+   async listModels(): Promise<AiChatAuthorInfo[]> {
+     let result: AiChatAuthorInfo[] = [];
+ 
+-    // When AI Gateway mode is active, include all suggested models for enabled providers.
++    // When AI Gateway mode is active, include all suggested models and deployment custom models.
+     let gwConfig = getAiGatewayConfig(this.env);
+     let gwModelIds = new Set<string>();
+     if (gwConfig) {
+@@ -536,11 +560,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+         result.push(entry);
+         gwModelIds.add(entry.id);
+       }
++      for (let entry of await this.#deploymentCustomModels()) {
++        result.push(entry.profile);
++        gwModelIds.add(entry.profile.id);
++      }
+     }
+ 
+     // Also include user-configured models, skipping any that duplicate a gateway model.
+     for (let model of this.storage.aiModels.list()) {
+-      if (!gwModelIds.has(model.profile.id)) {
++      if (!isAiGatewayCustomModelId(model.profile.id) && !gwModelIds.has(model.profile.id)) {
+         result.push(model.profile);
+       }
+     }
+@@ -548,6 +576,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+   }
+ 
+   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
++    if (isAiGatewayCustomModelId(profile.id) || config.provider === "ai-gateway-custom") {
++      throw new Error("Deployment-managed model IDs and configurations cannot be added by users.");
++    }
+     let gwConfig = getAiGatewayConfig(this.env);
+     if (gwConfig && !gwConfig.providers.has(config.provider)) {
+       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+@@ -558,6 +589,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+   }
+ 
+   async deleteModel(id: string): Promise<void> {
++    if (isAiGatewayCustomModelId(id)) {
++      throw new Error("Deployment-managed models can only be removed by an administrator.");
++    }
+     // In AI Gateway mode, don't allow deleting built-in suggested models.
+     let gwConfig = getAiGatewayConfig(this.env);
+     if (gwConfig) {
+@@ -572,16 +606,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+   }
+ 
+   async setQuickModel(id: string | null): Promise<void> {
++    // A shared catalog entry is safe to reference from a personal preference, but require that it
++    // currently exists so reserved IDs cannot be manufactured by callers.
++    if (id !== null && isAiGatewayCustomModelId(id) && !await this.#deploymentCustomModel(id)) {
++      throw new Error(`No such model: ${id}`);
++    }
+     this.storage.quickModel.put(id);
+   }
+ 
+   async getQuickModel(): Promise<null | string> {
+     let result = this.storage.quickModel.get();
+-    if (result && this.storage.aiModels.get(result)) {
++    if (!result) return null;
++    if (await this.#deploymentCustomModel(result)) return result;
++    if (!isAiGatewayCustomModelId(result) &&
++        (this.storage.aiModels.get(result) || getAiGatewayConfig(this.env)?.resolveModel(result))) {
+       return result;
+-    } else {
+-      return null;
+     }
++    return null;
+   }
+ 
+   async getPreferredModel(): Promise<string | null> {
+@@ -590,9 +631,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+ 
+   async setPreferredModel(id: string | null): Promise<void> {
+     if (id !== null) {
+-      // Validate that the model exists in the user's configured models or as a gateway model.
+-      let gwConfig = getAiGatewayConfig(this.env);
+-      let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id);
++      // Resolve the reserved shared namespace before user storage, including the deleted-entry case.
++      let shared = await this.#deploymentCustomModel(id);
++      let exists = !!shared || (!isAiGatewayCustomModelId(id) &&
++          (!!this.storage.aiModels.get(id) || !!getAiGatewayConfig(this.env)?.resolveModel(id)));
+       if (!exists) {
+         throw new Error(`No such model: ${id}`);
+       }
+@@ -699,33 +741,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+       profile: this.storage.profile.get()
+     };
+     if (modelId) {
+-      // In AI Gateway mode, resolve gateway models first.
+-      if (gwConfig) {
++      // Resolve deployment custom models before user storage. A stale reserved ID must never fall
++      // through to a legacy user-owned record with the same ID.
++      result.aiModel = await this.#deploymentCustomModel(modelId);
++      if (!result.aiModel && gwConfig) {
+         result.aiModel = gwConfig.resolveModel(modelId);
+       }
+-      if (!result.aiModel) {
++      if (!result.aiModel && !isAiGatewayCustomModelId(modelId)) {
+         result.aiModel = this.storage.aiModels.get(modelId);
+       }
+       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
+     }
+ 
+-    // Resolve the quick model (used for lightweight tasks like title generation).
+-    if (gwConfig) {
+-      // In AI Gateway mode, always use the hardcoded quick model.
+-      result.quickModel = gwConfig.getQuickModelConfig();
+-    } else {
+-      let quickModelId = this.storage.quickModel.get();
+-      if (quickModelId) {
+-        let quickModel = this.storage.aiModels.get(quickModelId);
+-        if (quickModel) {
+-          result.quickModel = quickModel.config;
+-        }
++    // Resolve the quick model (used for lightweight tasks like title generation). In Gateway
++    // mode the deployment's inexpensive default remains the fallback, but a user's selected
++    // shared custom model (or another available model) takes precedence.
++    let quickModelId = this.storage.quickModel.get();
++    if (quickModelId) {
++      let sharedQuickModel = await this.#deploymentCustomModel(quickModelId);
++      if (sharedQuickModel) {
++        result.quickModel = sharedQuickModel.config;
++      } else if (!isAiGatewayCustomModelId(quickModelId)) {
++        result.quickModel = gwConfig?.resolveModel(quickModelId)?.config ??
++            this.storage.aiModels.get(quickModelId)?.config;
+       }
+     }
++    if (!result.quickModel && gwConfig) {
++      result.quickModel = gwConfig.getQuickModelConfig();
++    }
+     return result;
+   }
+ 
+   async getExternalMessageChatContext(existingChatModelId: string | null): Promise<UserChatContext> {
++    // Deployment-managed IDs must remain pinned to their catalog entry. In particular, a deleted
++    // entry must fail as unavailable rather than letting an external message run on another model.
++    if (existingChatModelId && isAiGatewayCustomModelId(existingChatModelId)) {
++      return this.getChatContext(existingChatModelId);
++    }
++
+     let models = await this.listModels();
+     // Prefer the existing chat's model, then the user's preferred model, then the first available model.
+     let selectedModel = models.find(model => model.id === existingChatModelId)
+diff --git a/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..91aab0336d43fc62ff78bae4623d9b40fdfce3e6
+--- /dev/null
++++ b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+@@ -0,0 +1,144 @@
++import { useState } from 'react'
++import { Button, Input, useKumoToastManager } from '@cloudflare/kumo'
++import { RpcStub } from 'capnweb'
++import {
++  AdminAiGatewayCustomModel,
++  AdminAiGatewayCustomModelInput,
++  AdminApi,
++} from '@gadgets/workshop-shared/api'
++
++type Draft = AdminAiGatewayCustomModelInput
++
++const EMPTY_DRAFT: Draft = {
++  displayName: '',
++  providerSlug: '',
++  modelId: '',
++  chatCompletionsPath: 'v1/chat/completions',
++}
++
++/** Deployment-wide AI Gateway custom-provider model catalog editor. */
++export default function AiGatewayCustomModelsPanel({
++  admin,
++  models,
++  onChanged,
++}: {
++  admin: RpcStub<AdminApi>
++  models: AdminAiGatewayCustomModel[]
++  onChanged: () => Promise<void>
++}) {
++  const toasts = useKumoToastManager()
++  const [editingId, setEditingId] = useState<string | null>(null)
++  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
++  const [busy, setBusy] = useState(false)
++  const [deletingId, setDeletingId] = useState<string | null>(null)
++
++  const update = <K extends keyof Draft>(key: K, value: Draft[K]) => {
++    setDraft((current) => ({ ...current, [key]: value }))
++  }
++
++  const reset = () => {
++    setEditingId(null)
++    setDraft(EMPTY_DRAFT)
++  }
++
++  const save = async () => {
++    setBusy(true)
++    try {
++      if (editingId) await admin.updateAiGatewayCustomModel(editingId, draft)
++      else await admin.createAiGatewayCustomModel(draft)
++      await onChanged()
++      reset()
++      toasts.add({ title: editingId ? 'Model updated' : 'Model added', variant: 'success' })
++    } catch (err) {
++      toasts.add({
++        title: err instanceof Error ? err.message : 'Could not save custom model',
++        variant: 'error',
++      })
++    } finally {
++      setBusy(false)
++    }
++  }
++
++  const remove = async (model: AdminAiGatewayCustomModel) => {
++    if (!confirm(`Remove deployment model "${model.displayName}"? Existing chats using it will no longer run.`)) return
++    setDeletingId(model.id)
++    try {
++      await admin.deleteAiGatewayCustomModel(model.id)
++      await onChanged()
++      if (editingId === model.id) reset()
++      toasts.add({ title: 'Model removed', variant: 'success' })
++    } catch (err) {
++      toasts.add({
++        title: err instanceof Error ? err.message : 'Could not remove custom model',
++        variant: 'error',
++      })
++    } finally {
++      setDeletingId(null)
++    }
++  }
++
++  return (
++    <div className="space-y-5">
++      <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
++        <h2 className="text-lg font-semibold text-kumo-strong mb-1">AI Gateway custom models</h2>
++        <p className="text-sm text-kumo-subtle mb-5">
++          Make a model from an already-configured AI Gateway custom provider available to everyone.
++          Provider credentials stay in AI Gateway and are never entered here.
++        </p>
++
++        <div className="grid gap-4 sm:grid-cols-2">
++          <label className="space-y-1.5 text-sm text-kumo-default">
++            Display name
++            <Input value={draft.displayName} onChange={(event) => update('displayName', event.target.value)} placeholder="My coding model" />
++          </label>
++          <label className="space-y-1.5 text-sm text-kumo-default">
++            Provider slug
++            <Input value={draft.providerSlug} onChange={(event) => update('providerSlug', event.target.value)} placeholder="my-provider" />
++          </label>
++          <label className="space-y-1.5 text-sm text-kumo-default">
++            Model ID
++            <Input value={draft.modelId} onChange={(event) => update('modelId', event.target.value)} placeholder="my-model" />
++          </label>
++          <label className="space-y-1.5 text-sm text-kumo-default">
++            Chat Completions path
++            <Input value={draft.chatCompletionsPath} onChange={(event) => update('chatCompletionsPath', event.target.value)} placeholder="v1/chat/completions" />
++          </label>
++        </div>
++        <p className="mt-3 text-xs text-kumo-subtle">
++          Enter the upstream relative Chat Completions path, such as <code>v1/chat/completions</code> or <code>v4/chat/completions</code>.
++        </p>
++        <div className="mt-5 flex justify-end gap-2">
++          {editingId && <Button variant="ghost" size="sm" onClick={reset} disabled={busy}>Cancel</Button>}
++          <Button variant="primary" size="sm" onClick={save} loading={busy}>
++            {editingId ? 'Save model' : 'Add model'}
++          </Button>
++        </div>
++      </div>
++
++      <div className="bg-kumo-elevated border border-kumo-line rounded-xl divide-y divide-kumo-line">
++        {models.length === 0 ? (
++          <p className="p-6 text-sm text-kumo-subtle">No deployment custom models configured.</p>
++        ) : models.map((model) => (
++          <div key={model.id} className="flex flex-wrap items-center gap-3 p-4">
++            <div className="min-w-0 flex-1">
++              <p className="truncate text-sm font-medium text-kumo-default">{model.displayName}</p>
++              <p className="mt-0.5 truncate font-mono text-xs text-kumo-subtle">
++                {model.providerSlug} / {model.modelId} · {model.chatCompletionsPath}
++              </p>
++            </div>
++            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} onClick={() => {
++              setEditingId(model.id)
++              setDraft({
++                displayName: model.displayName,
++                providerSlug: model.providerSlug,
++                modelId: model.modelId,
++                chatCompletionsPath: model.chatCompletionsPath,
++              })
++            }}>Edit</Button>
++            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} loading={deletingId === model.id} onClick={() => remove(model)}>Remove</Button>
++          </div>
++        ))}
++      </div>
++    </div>
++  )
++}
+diff --git a/packages/workshop-frontend/src/routes/providers.tsx b/packages/workshop-frontend/src/routes/providers.tsx
+index 92be1d365f87a07811b7b3dcc3863d2815a6e3e2..750817d4fac09773df42027307ee1044b1170084 100644
+--- a/packages/workshop-frontend/src/routes/providers.tsx
++++ b/packages/workshop-frontend/src/routes/providers.tsx
+@@ -1,8 +1,11 @@
+ import { createFileRoute } from '@tanstack/react-router'
+ import { useState, useEffect, useRef } from 'react'
+ import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
++import { RpcStub } from 'capnweb'
+ import { useAuthenticatedApi } from '../AuthContext'
+ import {
++  AdminAiGatewayCustomModel,
++  AdminApi,
+   AiChatAuthorInfo,
+   AiGatewayInfo,
+   AiModelProvider,
+@@ -18,6 +21,7 @@ import {
+ import AddModelModal from '../AddModelModal'
+ import { useDocumentTitle } from '../useDocumentTitle'
+ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
++import AiGatewayCustomModelsPanel from '../components/AiGatewayCustomModelsPanel'
+ 
+ export const Route = createFileRoute('/providers')({ component: ProvidersPage })
+ 
+@@ -36,12 +40,14 @@ function ModelRow({
+   model,
+   isQuick,
+   isBuiltIn,
++  isDeploymentManaged,
+   onDelete,
+   onSetQuick,
+ }: {
+   model: AiChatAuthorInfo
+   isQuick: boolean
+   isBuiltIn: boolean
++  isDeploymentManaged: boolean
+   onDelete: () => void
+   onSetQuick: () => void
+ }) {
+@@ -75,6 +81,11 @@ function ModelRow({
+               built-in
+             </span>
+           )}
++          {isDeploymentManaged && (
++            <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle">
++              deployment-managed
++            </span>
++          )}
+           {isQuick && (
+             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[rgba(255,72,1,0.10)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-brand">
+               <Lightning size={9} weight="fill" />
+@@ -105,7 +116,7 @@ function ModelRow({
+               <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
+               {isQuick ? 'Clear quick model' : 'Set as quick model'}
+             </DropdownMenu.Item>
+-            {!isBuiltIn && (
++            {!isBuiltIn && !isDeploymentManaged && (
+               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
+                 <Trash size={13} className="mr-2" />
+                 Delete provider
+@@ -133,7 +144,7 @@ function Notice({ children }: { children: React.ReactNode }) {
+ function ProvidersPage() {
+   useDocumentTitle('AI Providers')
+ 
+-  const { authenticatedApi } = useAuthenticatedApi()
++  const { authenticatedApi, isAdmin } = useAuthenticatedApi()
+   const toasts = useKumoToastManager()
+   const [models, setModels] = useState<AiChatAuthorInfo[]>([])
+   const [quickModel, setQuickModel] = useState<string | null>(null)
+@@ -143,6 +154,9 @@ function ProvidersPage() {
+   const [loadError, setLoadError] = useState(false)
+   const [sheetOpen, setSheetOpen] = useState(false)
+   const [deletingId, setDeletingId] = useState<string | null>(null)
++  // Wrapped because an RPC stub is callable and React would otherwise treat it as a state updater.
++  const [admin, setAdmin] = useState<{ api: RpcStub<AdminApi> } | null>(null)
++  const [aiGatewayCustomModels, setAiGatewayCustomModels] = useState<AdminAiGatewayCustomModel[]>([])
+ 
+   const fetchAll = async () => {
+     setLoadError(false)
+@@ -165,6 +179,31 @@ function ProvidersPage() {
+ 
+   useEffect(() => { fetchAll() }, [authenticatedApi])
+ 
++  // The catalog belongs with providers in the UI, but its edit capability remains admin-only.
++  useEffect(() => {
++    if (!isAdmin) return
++    let cancelled = false
++    let api: RpcStub<AdminApi> | null = null
++    ;(async () => {
++      try {
++        api = await authenticatedApi.getAdminApi()
++        if (cancelled) {
++          api?.[Symbol.dispose]?.()
++          return
++        }
++        if (!api) return
++        setAdmin({ api })
++        setAiGatewayCustomModels((await api.getSettings()).aiGatewayCustomModels)
++      } catch (err) {
++        console.error('Failed to load AI Gateway custom models:', err)
++      }
++    })()
++    return () => {
++      cancelled = true
++      api?.[Symbol.dispose]?.()
++    }
++  }, [authenticatedApi, isAdmin])
++
+   const gatewayMode = aiConfig?.enabled === true
+ 
+   const isBuiltIn = (modelId: string): boolean => {
+@@ -173,6 +212,9 @@ function ProvidersPage() {
+     return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])
+   }
+ 
++  const isDeploymentManaged = (modelId: string): boolean =>
++    aiConfig?.enabled === true && aiConfig.deploymentModelIds.includes(modelId)
++
+   const handleDelete = async (model: AiChatAuthorInfo) => {
+     if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
+     setDeletingId(model.id)
+@@ -273,6 +315,19 @@ function ProvidersPage() {
+           </div>
+         )}
+ 
++        {admin && (
++          <div className="px-3 pb-4">
++            <AiGatewayCustomModelsPanel
++              admin={admin.api}
++              models={aiGatewayCustomModels}
++              onChanged={async () => {
++                setAiGatewayCustomModels((await admin.api.getSettings()).aiGatewayCustomModels)
++                await fetchAll()
++              }}
++            />
++          </div>
++        )}
++
+         {/* Model list */}
+         {loading ? (
+           <div className="flex flex-col gap-0.5 px-3">
+@@ -315,6 +370,7 @@ function ProvidersPage() {
+                 model={model}
+                 isQuick={quickModel === model.id}
+                 isBuiltIn={isBuiltIn(model.id)}
++                isDeploymentManaged={isDeploymentManaged(model.id)}
+                 onDelete={() => handleDelete(model)}
+                 onSetQuick={() => handleSetQuick(model.id)}
+               />
+diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
+index 8fb641693e1c24246365afd6b2543a932373edd2..72a1260465d6f16225f254d3660167148ffe86b9 100644
+--- a/packages/workshop-shared/src/api.ts
++++ b/packages/workshop-shared/src/api.ts
+@@ -846,6 +846,23 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
+ /** Maximum width or height of an admin-uploaded site logo in pixels. */
+ export const MAX_SITE_LOGO_DIMENSION = 512;
+ 
++/** One deployment-managed model served by a custom provider configured on AI Gateway. */
++export type AdminAiGatewayCustomModel = {
++  /** Stable Workshop-generated identifier selected by chats, never an upstream model ID. */
++  id: string;
++  /** Human-readable model name shown in Workshop. */
++  displayName: string;
++  /** Cloudflare AI Gateway custom-provider slug. */
++  providerSlug: string;
++  /** Upstream model identifier sent in the Chat Completions request body. */
++  modelId: string;
++  /** Relative OpenAI Chat Completions path, for example `v1/chat/completions`. */
++  chatCompletionsPath: string;
++};
++
++/** Admin-supplied fields for a deployment-managed AI Gateway custom model. */
++export type AdminAiGatewayCustomModelInput = Omit<AdminAiGatewayCustomModel, "id">;
++
+ /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
+ export type AdminSettingsView = {
+   /** Whether new account signups are allowed. */
+@@ -866,6 +883,8 @@ export type AdminSettingsView = {
+   resourceVendors: AdminResourceVendor[];
+   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
+   formats: AdminFormat[];
++  /** Models supplied to every user by the deployment's AI Gateway custom-provider catalog. */
++  aiGatewayCustomModels: AdminAiGatewayCustomModel[];
+ };
+ 
+ /**
+@@ -1013,6 +1032,15 @@ export interface AdminApi {
+ 
+   /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
+   setFormatOrder(blueprintIds: string[]): Promise<void>;
++
++  /** Add an AI Gateway custom-provider model; Workshop generates its ID and never receives keys. */
++  createAiGatewayCustomModel(input: AdminAiGatewayCustomModelInput): Promise<void>;
++
++  /** Replace one deployment-managed custom model's editable fields. */
++  updateAiGatewayCustomModel(id: string, input: AdminAiGatewayCustomModelInput): Promise<void>;
++
++  /** Remove one deployment-managed custom model, making existing selections unavailable. */
++  deleteAiGatewayCustomModel(id: string): Promise<void>;
+ }
+ 
+ /** A partial edit to one promoted format. Absent fields are left alone. */
+@@ -1136,12 +1164,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
+ export type AiGatewayInfo = {
+   enabled: true;
+   enabledProviders: AiModelProvider[];
++  /** Opaque deployment-managed custom-model IDs; routing details remain server-side. */
++  deploymentModelIds: string[];
+ } | {
+   enabled: false;
+ };
+ 
+-/** Configuration specifying how to connect to an AI model provider. */
+-export type AiModelConfig = {
++/** Configuration for a user-owned model connected directly or through an AI Gateway. */
++export type DirectAiModelConfig = {
+   /** Which AI provider hosts the model? */
+   provider: AiModelProvider;
+ 
+@@ -1165,6 +1195,21 @@ export type AiModelConfig = {
+   apiUrl?: string;
+ };
+ 
++/** Server-resolved configuration for a deployment AI Gateway custom-provider model. */
++export type AiGatewayCustomModelConfig = {
++  /** Identifies the deployment-only AI Gateway custom-provider routing branch. */
++  provider: "ai-gateway-custom";
++  /** Raw upstream model identifier; the user-facing ID remains opaque. */
++  model: string;
++  /** Custom-provider slug configured in the deployment's Cloudflare AI Gateway. */
++  providerSlug: string;
++  /** Validated relative OpenAI Chat Completions endpoint path. */
++  chatCompletionsPath: string;
++};
++
++/** Configuration specifying how Workshop reaches an AI model. */
++export type AiModelConfig = DirectAiModelConfig | AiGatewayCustomModelConfig;
++
+ /**
+  * Workers AI adds the response cap to the prompt and rejects a request whose total exceeds the
+  * model's window, so every Cloudflare model reserves this much of it for the response.
+diff --git a/plans/ai-gateway-custom-provider-models.md b/plans/ai-gateway-custom-provider-models.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..92184dc06e938b23e9f42c80d66f425e4fabd642
+--- /dev/null
++++ b/plans/ai-gateway-custom-provider-models.md
+@@ -0,0 +1,349 @@
++# Deployment-wide AI Gateway custom-provider models
++
++## Status
++
++Proposed implementation plan. No implementation has been made from this document.
++
++## Goal
++
++Let a deployment administrator publish a catalog of models served by **custom providers that
++are already configured on the deployment's Cloudflare AI Gateway**. Every user can select those
++models in Workshop chats and workspaces. The Workshop must send their requests through that
++deployment gateway using the gateway's preconfigured provider credentials.
++
++This is deliberately unrelated to Workers AI. It is also not a UI for creating or credentialing
++an AI Gateway custom provider.
++
++## Product decisions already made
++
++- An administrator creates, edits, and deletes the catalog entries in the Workshop admin UI.
++- An entry has a human display name, a custom-provider slug, and a provider model ID.
++- The initial UI may require manual entry of the slug and model ID; model discovery is out of
++  scope.
++- Every user of the deployment sees and can select every enabled catalog entry.
++- Only administrators may mutate the shared catalog.
++- The custom-provider protocol is OpenAI-compatible for this first version.
++- The custom provider and its credentials are configured outside Workshop, in Cloudflare AI
++  Gateway. No upstream provider credentials, gateway credentials, or custom-provider setup fields
++  are entered or stored through this feature.
++- Existing user-owned direct/BYOK models remain unchanged. Do not add a new user-owned-model
++  feature as part of this work.
++- The first version supports custom providers only. Supporting arbitrary built-in AI Gateway
++  providers is a later extension.
++- **Proposed policy — needs confirmation:** a shared custom-provider model always uses the
++  deployment gateway and is billed there, even if its user has connected a personal Cloudflare
++  account for unified billing. A custom provider is account-specific and normally does not exist in
++  that user's `default` gateway.
++
++## Non-goals
++
++- Creating, editing, deleting, or storing Cloudflare AI Gateway provider configuration.
++- Discovering models from the gateway or from an upstream provider.
++- Supporting arbitrary native upstream request formats.
++- Changing the existing Workers AI configuration or treating a custom provider as Workers AI.
++- Replacing the current direct-provider model picker.
++
++## Existing implementation and constraints
++
++### The current “AI providers” page is a per-user model picker
++
++`packages/workshop-frontend/src/routes/providers.tsx` calls
++`AuthenticatedApi.listModels()`, `getQuickModel()`, and `getAiConfig()`, then renders
++`AddModelModal`.
++
++`packages/workshop-frontend/src/AddModelModal.tsx` only offers provider types defined by
++`AiModelProvider` and `SUGGESTED_MODELS`. In direct mode it stores credentials in the user's
++model configuration. In platform AI Gateway mode it hides credential fields and saves an empty
++token because gateway routing ignores per-model credentials.
++
++The current per-user storage is `UserDurableObject.storage.aiModels`, keyed by the raw model ID
++(`packages/workshop-backend/src/user.ts`). That is unsuitable as the identifier for the new shared
++catalog: raw model IDs are not globally unique across providers or endpoints.
++
++### The current gateway path is a fixed adapter set
++
++`AiModelProvider` in `packages/workshop-shared/src/api.ts` is a fixed union:
++`openai`, `anthropic`, `google`, `cloudflare`, and `ollama`.
++
++`packages/workshop-backend/src/ai-models.ts` explicitly builds the API descriptor and gateway path
++for each of those types. `gatewayNativeModel()` does not have a generic custom-provider branch.
++The `AiGatewayConfig` provider set in `packages/workshop-backend/src/ai-gateway.ts` only produces
++suggested models for those known types.
++
++This feature therefore needs a distinct configuration/routing variant; it cannot be implemented by
++placing a custom-provider slug in the existing `provider` field and hoping that the current switch
++will route it.
++
++### Deployment-wide admin configuration is the correct persistence mechanism
++
++`AdminSettings` owns deployment-wide `AdminConfig`, serializes it to the reserved admin-config KV
++record, and `readAdminConfig()` reads the mirrored record cheaply on runtime paths:
++
++- configuration schema and backwards-compatible parsing:
++  `packages/workshop-backend/src/admin-config.ts`;
++- authoritative mutation and KV mirror:
++  `packages/workshop-backend/src/admin-settings.ts`;
++- admin capability: `AdminApi` in `packages/workshop-shared/src/api.ts`, implemented by
++  `AdminApiImpl` in `admin-settings.ts`;
++- existing admin UI: `packages/workshop-frontend/src/AdminPage.tsx`.
++
++The feature must use that mechanism rather than a new Durable Object, KV key, service, or a
++per-user model record. The admin capability is already minted only for admins by
++`AuthenticatedApi.getAdminApi()`.
++
++## Proposed data model
++
++Add a deployment-owned entry, conceptually:
++
++```ts
++type AdminAiGatewayCustomModel = {
++  // Stable opaque identifier owned by Workshop, not the provider's model ID.
++  id: string;
++
++  // Text displayed to users.
++  displayName: string;
++
++  // The already-configured Cloudflare AI Gateway custom-provider slug.
++  providerSlug: string;
++
++  // The upstream model identifier sent through that provider.
++  modelId: string;
++
++  // Relative OpenAI Chat Completions endpoint path, e.g. "v1/chat/completions" or
++  // "v4/chat/completions". This is appended to the provider's Cloudflare-configured base URL.
++  chatCompletionsPath: string;
++};
++```
++
++Add an ordered `aiGatewayCustomModels` collection to `AdminConfig`, defaulting to `[]`. Persist
++and parse it defensively, just as other AdminConfig fields are parsed. Older stored config must
++continue to load as an empty catalog.
++
++The opaque `id` is required because a raw model ID may collide with:
++
++- another custom provider's model;
++- a user-owned direct/BYOK model; or
++- a model currently synthesized from `SUGGESTED_MODELS`.
++
++Chat selection and storage must use the opaque ID. The raw `modelId` is only upstream routing data.
++Do not overload `AiChatAuthorInfo.id` with the raw provider model identifier for the new entries.
++
++Use a reserved, non-user-model namespace such as `aig-custom:<uuid>`, generated only by the
++backend. `addModel()` must reject that namespace, and shared-model resolution must happen before
++per-user resolution. Otherwise a user could create a model with the same ID and a deleted shared
++entry could silently begin using their personal model.
++
++Represent the resolved entry as a separate discriminated `AiModelConfig` variant rather than an
++arbitrary value in `AiModelProvider`. For example, its provider discriminator can be
++`"ai-gateway-custom"` and it can carry `providerSlug`, the raw upstream `model`, its relative
++Chat Completions path. Keeping it out of `AiModelProvider` prevents `AddModelModal`,
++`SUGGESTED_MODELS`, and
++`CF_AI_GATEWAY_PROVIDERS` from treating it as a user-configurable native provider.
++
++## Required API and UI work
++
++1. Extend the shared, documented public API with an admin view/input type and AdminApi methods to
++   create, update, and delete entries. The server generates IDs; clients never choose them.
++2. Include the catalog in `AdminSettingsView` so the existing admin settings load remains a single
++   RPC call. Add its reserved IDs to the enabled `AiGatewayInfo` response so the ordinary providers
++   page can render them as deployment-managed without inspecting an opaque-ID convention.
++3. Add an **AI Gateway Models** section or tab to `AdminPage` with create, edit, and delete
++   controls. It needs display-name, provider-slug, model-ID, and Chat Completions endpoint-path
++   inputs (for example `v1/chat/completions` or `v4/chat/completions`). It must clearly say that
++   credentials are configured in Cloudflare AI Gateway.
++4. Merge the shared catalog into ordinary users' `listModels()` results, while retaining their
++   current personal-model results. Only expose it while the deployment gateway is configured.
++5. Resolve a selected catalog ID to the deployment-owned configuration in `getChatContext()`,
++   `setPreferredModel()`, and every path that obtains a chat context (chat start/resume, external
++   messages, callbacks, model bindings, and attachment validation). A user must never receive the
++   deployment gateway token or the admin configuration capability.
++6. Show shared models as deployment-managed in the regular provider/model page. Regular users
++   cannot edit or delete them; `deleteModel()` must reject their reserved IDs. Admins manage them
++   only from the admin page, avoiding two competing ownership models.
++7. Preserve clear behavior for deleted catalog entries referenced by an existing chat: selection
++   must fail as an unavailable model rather than silently routing to a different model.
++
++## Routing requirements
++
++Add a specific model-config variant for a deployment AI Gateway custom provider. Its routing data
++must include the opaque catalog ID, the custom-provider slug, and the upstream model ID.
++
++The backend must construct the request using the custom provider's OpenAI-compatible route on the
++**deployment** gateway. It must not:
++
++- route through the Workers AI endpoint;
++- use a per-user API URL or token;
++- send a request directly to the upstream provider; or
++- use the current hard-coded `cloudflare` provider branch.
++
++Reuse the deployment gateway's authenticated request and gateway-log-cost path where applicable.
++The gateway account ID and Run/Read token remain environment secrets and never cross the RPC
++boundary.
++
++### Confirmed billing/routing policy
++
++Today `getModel()` prioritizes a connected user's own Cloudflare AI Gateway (unified billing)
++before the platform gateway (`packages/workshop-backend/src/ai-models.ts`). A deployment custom
++provider normally does not exist in that user's personal/default gateway.
++
++The implementation recognizes the `ai-gateway-custom` config **before** that generic user-gateway
++precedence and routes it only through the deployment gateway. This prevents an identically named
++model from reaching a different provider and means these calls are billed to the deployment
++gateway. Requiring every user to configure the same custom provider in their personal account is
++not in scope.
++
++## Validation and security requirements
++
++- Allow catalog mutation only through the admin capability. Do not trust the visibility of the
++  admin React route as authorization.
++- Reject mutations unless platform AI Gateway mode is configured; otherwise entries cannot run.
++- Validate maximum lengths, non-empty trimmed values, and uniqueness of the opaque ID. Define
++  explicit duplicate behavior for `(providerSlug, modelId)`—prefer rejecting duplicates.
++- Validate the slug as Cloudflare's documented alphanumeric-and-hyphen custom-provider slug and
++  reject controls/empty values. It becomes part of the gateway's provider-specific URL path.
++- Require a normalized relative endpoint path that ends exactly in `chat/completions`; reject an
++  absolute URL, query/fragment, empty, `.`/`..`, encoded slash, and control characters. Encode
++  every accepted dynamic path segment when building the gateway URL, so the configured custom
++  provider is the only possible upstream authority.
++- Bound display names and model IDs, reject control characters, and reject duplicate
++  `(providerSlug, modelId, chatCompletionsPath)` entries.
++- Keep `apiToken`, account ID, gateway token, headers, request bodies, and model prompts out of
++  this catalog and out of logs.
++- Continue to distinguish deployment-managed models from user-owned direct models for edit/delete
++  authorization.
++
++## Verified Cloudflare request contract and endpoint mapping
++
++Cloudflare's current [Custom Providers documentation](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/)
++provides two routes. Its Unified `/compat` API fixes the upstream endpoint to
++`/chat/completions`, so it cannot meet providers whose OpenAI-compatible endpoint is, for example,
++`/v4/chat/completions`.
++
++Use Cloudflare's **provider-specific endpoint** instead:
++
++```text
++Gateway base URL: https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/custom-{slug}/{path-prefix}
++pi appends:       /chat/completions
++Upstream URL:     {custom-provider-base-url}/{path-prefix}/chat/completions
++```
++
++The admin enters the complete relative endpoint path (`v1/chat/completions`,
++`v4/chat/completions`, or another safe path ending in `chat/completions`). The backend validates
++that fixed suffix and derives the gateway base URL from the preceding path prefix. It then uses
++pi's `openai-completions` adapter, which appends the fixed suffix, and sends the raw upstream model
++ID in the JSON `model` field.
++
++The deployment's existing `cf-aig-authorization` header and null `Authorization` / `x-api-key`
++suppressions are the intended stored-key/BYOK path. Do not send an upstream provider key from
++Workshop. The gateway log route remains the deployment's named gateway, so the existing cost-log
++lookup should be retained and covered by an integration smoke test.
++
++### Day-one PDF support
++
++Use the existing OpenAI Chat Completions data-URL payload for every custom model: pi represents a
++staged PDF as an `image_url` data URL with MIME `application/pdf`, and Workshop must permit that
++upload and replay it unchanged. This is the simplest dependency-free day-one path and follows the
++same OpenAI-Completions request shape as images.
++
++PDF input is not portable across every implementation that calls itself OpenAI-compatible. A
++provider that rejects this payload will surface its normal request error; Workshop will not add a
++provider-specific file-ID/Responses adapter, PDF-to-image renderer, or PDF text-extraction
++dependency in this first version. Add one only when a concrete provider requires it.
++
++The generic protocol also cannot establish an individual model's token window. Use the existing
++unknown-model defaults (128K context and 4K output) initially; a future catalog can add validated
++per-model limits if needed.
++
++## Implementation sequence
++
++1. **Shared schema and persisted catalog**
++   - In `packages/workshop-shared/src/api.ts`, add fully documented catalog view/input types,
++     the discriminated custom-model config variant, AdminApi CRUD methods, and
++     `AiGatewayInfo.deploymentModelIds`.
++   - In `packages/workshop-backend/src/admin-config.ts`, add the catalog to `AdminConfig`, a
++     default, parser/sanitizer, reserved-ID helpers, and pure helpers that turn an entry into its
++     user-visible profile and resolved config. Normalize the persisted Chat Completions endpoint
++     path and drop malformed/legacy entries.
++   - In `packages/workshop-backend/src/admin-settings.ts`, add serialized CRUD methods that mutate
++     the single admin-config record and mirror it to KV. Generate IDs here; reject mutations when
++     the deployment gateway configuration is absent or invalid.
++   - Update `AdminSettingsView` assembly and add focused `admin-config` tests. Keep the backend
++     diff small: no new storage binding, Durable Object, or environment variable is needed.
++
++2. **Resolve shared entries without changing personal models**
++   - In `packages/workshop-backend/src/user.ts`, read the mirrored admin config for `listModels()`,
++     `setPreferredModel()`, and `getChatContext()`. Merge only valid shared entries when gateway
++     mode is enabled; resolve them before `storage.aiModels`.
++   - Make `addModel()` and `deleteModel()` reject the reserved shared-ID namespace. This protects
++     deletion/resume semantics even after an admin removes an entry.
++   - In `packages/workshop-backend/src/server.ts`, make `getAiConfig()` return the shared IDs along
++     with the normal enabled-provider information. Do not expose slugs, upstream IDs, or tokens
++     through that response.
++   - Update dependent exhaustive code for the new config discriminator, notably
++     `agent-compaction.ts`, `chat-attachment-validation.ts`, `agent.ts`, and
++     `chat-attachment-pdf.ts`. Mark the custom OpenAI-Completions handle as PDF-capable so upload
++     validation and replay send its data-URL payload unchanged. Use conservative unknown-model
++     limits; do not add a custom-provider option to `AddModelModal`.
++
++3. **Add the deployment-only routing branch**
++   - In `packages/workshop-backend/src/ai-models.ts`, identify the custom config before the
++     connected-user gateway branch. Require `getAiGatewayConfig(env)` and route only through its
++     deployment gateway.
++   - Synthesize an `openai-completions` model with base URL
++     `https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/custom-{providerSlug}/{path-prefix}`
++     and the raw upstream `modelId`. Derive and path-encode `path-prefix` from the validated
++     endpoint path. Reuse deployment gateway authorization, metadata, and log route; do not add
++     the custom slug to `CF_AI_GATEWAY_PROVIDERS`.
++   - Ensure a forged custom config cannot fall through to direct-provider routing or a user's
++     default gateway. Add descriptor and captured-request tests in `ai-models.test.ts` for the
++     exact URL, request `model`, headers, log route, and personal-gateway precedence.
++
++4. **Admin and regular-user UI**
++   - Add a compact AI Gateway Models panel/tab to `packages/workshop-frontend/src/AdminPage.tsx`.
++     It loads from `AdminSettingsView`, manages local form/error/busy state, and refreshes settings
++     after mutation. Follow the existing RPC-stub lifecycle pattern.
++   - Update `packages/workshop-frontend/src/routes/providers.tsx` to use
++     `deploymentModelIds`: label those rows “deployment-managed” and omit their delete action.
++     Keep regular Add Model behavior unchanged.
++   - Exercise onboarding as well: it already obtains `listModels()`, so shared models must be
++     selectable there without exposing an edit path.
++
++5. **Validate end to end**
++   - Run the focused backend tests first, then `pnpm --filter @gadgets/workshop-backend test` (or
++     the package's established test command), `pnpm build`, and `pnpm lint` before review.
++   - Finally, send a real non-production request through a configured custom provider with only
++     `cf-aig-authorization` present. Verify the provider's stored/default key is used and that a
++     gateway log with a retrievable cost is produced.
++
++## Test plan
++
++- Admin authorization: non-admin callers cannot obtain the admin capability or mutate the catalog.
++- Config persistence: defaults, malformed/legacy config, create/edit/delete, and KV-mirror failure
++  behavior.
++- Validation: blank, oversized, malformed, duplicate, and path-special slug/model/endpoint values.
++- Visibility: every user lists shared models; personal direct/BYOK models remain visible only to
++  their owner; deleted shared entries disappear.
++- Identity: same raw model ID can coexist across two custom providers and with a personal model;
++  user model creation cannot claim the reserved shared-ID namespace.
++- Resolution: opaque shared IDs resolve to the intended slug/model; stale chat IDs fail clearly and
++  never fall through to a personal model.
++- Routing: a shared custom model uses the deployment gateway route and credentials, never Workers
++  AI or a direct endpoint; verify `v1` and `v4` endpoint paths, encoded path segments, request API
++  shape, headers, and gateway log route.
++- PDFs: custom models accept, replay, and send the expected `application/pdf` data URL through
++  Chat Completions. A rejecting provider surfaces its response error; no alternative PDF dialect is
++  silently substituted.
++- Billing precedence: cover the policy selected above for a user with a connected personal
++  Cloudflare account.
++- Frontend: admin CRUD states/errors and regular-user read-only presentation.
++
++## Acceptance criteria
++
++- An admin can create, edit, and delete a deployment-wide custom-provider model entry.
++- A non-admin cannot mutate it through the UI or a crafted RPC call.
++- Every user can select the entry without entering an upstream API key.
++- The request reaches the configured deployment AI Gateway custom provider using its
++  OpenAI-compatible contract, not Workers AI.
++- Two entries can use identical upstream model IDs when their provider slugs differ.
++- Existing per-user direct/BYOK models continue to work unchanged.
++- Removing an entry does not cause an old chat to select or execute a different model.
+-- 
+2.53.0
+
