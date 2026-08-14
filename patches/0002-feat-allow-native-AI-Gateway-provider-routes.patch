@@ -22,7 +22,7 @@ index db65d5736d9557c3f5f428d807ad4be7df6fb569..ac094d2629040eac13f7bbc3ebc336ea
 @@ -55,6 +55,16 @@ same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it through a different Gateway
  account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass gateways and call the Workers AI REST
  endpoint directly (using the same account/token pair; such requests produce no cost logs).
- 
+
 +### Deployment AI Gateway models
 +
 +An administrator can publish models from the **AI providers** page. Workshop stores no upstream
@@ -57,7 +57,7 @@ index 274aea3c78c8e10f70a33c869cb6c53c0db39517..437ba7715ca0cb514449667391ec90df
 +        {id: "aig-custom:not-a-uuid", displayName: "bad", gatewayProviderRoute: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
        ],
      }));
- 
+
 @@ -76,6 +76,25 @@ describe("AI Gateway custom model config", () => {
      expect(isAiGatewayCustomModelId("aig-custom:legacy")).toBe(true);
      expect(isAiGatewayCustomModelId("model")).toBe(false);
@@ -82,14 +82,14 @@ index 274aea3c78c8e10f70a33c869cb6c53c0db39517..437ba7715ca0cb514449667391ec90df
 +    }]);
 +  });
  });
- 
+
  describe("reorderFormats", () => {
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
 index 230fdb764ffa23e399c7bc55f925ce97fe80738f..40a565199565b3f00bd0518b7e506e9c48f38e0d 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
 @@ -34,11 +34,18 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
- 
+
  const CUSTOM_PROVIDER_CONFIG: AiModelConfig = {
    provider: "ai-gateway-custom",
 -  providerSlug: "acme-models",
@@ -97,7 +97,7 @@ index 230fdb764ffa23e399c7bc55f925ce97fe80738f..40a565199565b3f00bd0518b7e506e9c
    model: "acme-code-1",
    chatCompletionsPath: "v4/chat/completions",
  };
- 
+
 +const OPENROUTER_CONFIG: AiModelConfig = {
 +  provider: "ai-gateway-custom",
 +  gatewayProviderRoute: "openrouter",
@@ -111,7 +111,7 @@ index 230fdb764ffa23e399c7bc55f925ce97fe80738f..40a565199565b3f00bd0518b7e506e9c
 @@ -223,7 +230,31 @@ describe("getModel AI Gateway routing", () => {
      expect(JSON.parse(request.body).model).toBe("acme-code-1");
    }, 15000);
- 
+
 -  it("sends custom-model PDFs as OpenAI Chat Completions image data URLs", async () => {
 +  it("routes a deployment model through AI Gateway's native OpenRouter endpoint", async () => {
 +    const handle = getModel(env(), OPENROUTER_CONFIG, INITIATOR, {
@@ -158,7 +158,7 @@ index f84abf6cb604f850c90a49de24ca5d036b74b333..b4a1ce3ebfebbce0b9e3f058fae90e4b
 -const CUSTOM_PROVIDER_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 +const GATEWAY_PROVIDER_ROUTE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
  const SAFE_PATH_SEGMENT = /^[A-Za-z0-9._~-]+$/;
- 
+
  /** Whether an ID belongs to Workshop's reserved deployment-model namespace. */
 @@ -124,25 +124,33 @@ export function isAiGatewayCustomModelId(id: string): boolean {
  // the input so the parser can safely drop malformed legacy entries.
@@ -200,7 +200,7 @@ index f84abf6cb604f850c90a49de24ca5d036b74b333..b4a1ce3ebfebbce0b9e3f058fae90e4b
 -  return {id, displayName, providerSlug, modelId, chatCompletionsPath};
 +  return {id, displayName, gatewayProviderRoute, modelId, chatCompletionsPath};
  }
- 
+
  /** Normalize a custom-model input or throw an error appropriate for the admin UI. */
 @@ -151,11 +159,11 @@ export function requireAiGatewayCustomModelInput(
    let entry = normalizeAiGatewayCustomModel({id: `${AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX}` +
@@ -230,23 +230,23 @@ index a857db42a3ea3ce45fa1fd72f093062ae5849a98..edfd87d8e06062cb3ecbd347f654d615
 --- a/packages/workshop-backend/src/admin-settings.ts
 +++ b/packages/workshop-backend/src/admin-settings.ts
 @@ -19,7 +19,7 @@ const logger = createWorkshopLogger("workshop.admin.settings");
- 
+
  function sameCustomModelRoute(
      left: AdminAiGatewayCustomModel, right: AdminAiGatewayCustomModel): boolean {
 -  return left.providerSlug === right.providerSlug && left.modelId === right.modelId &&
 +  return left.gatewayProviderRoute === right.gatewayProviderRoute && left.modelId === right.modelId &&
        left.chatCompletionsPath === right.chatCompletionsPath;
  }
- 
+
 @@ -307,7 +307,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
- 
+
    #requireAiGateway(): void {
      if (!getAiGatewayConfig(this.env)) {
 -      throw new Error("A deployment AI Gateway must be configured before adding custom models.");
 +      throw new Error("A deployment AI Gateway must be configured before adding models.");
      }
    }
- 
+
 @@ -318,7 +318,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
      await this.#mutateAdminConfig(config => {
        if (config.aiGatewayCustomModels.some(model =>
@@ -276,12 +276,12 @@ index 6447a3c4cba60130a554fef02cbe50d622d0efb1..cc4c22f7b0e6b503d195c3e1f2a93c37
 -    return getCustomModelViaGateway(gateway, config, initiator, options);
 +    return getDeploymentModelViaGateway(gateway, config, initiator, options);
    }
- 
+
    // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
 @@ -393,22 +393,22 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
    return getModelDirect(config, options.sessionAffinity);
  }
- 
+
 -function getCustomModelViaGateway(
 +function getDeploymentModelViaGateway(
      gwConfig: AiGatewayConfig, config: Extract<AiModelConfig, {provider: "ai-gateway-custom"}>,
@@ -325,7 +325,7 @@ index 91aab0336d43fc62ff78bae4623d9b40fdfce3e6..cd56aa3fbb2a475a6f22bc8eb85c42ca
 --- a/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
 +++ b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
 @@ -11,12 +11,12 @@ type Draft = AdminAiGatewayCustomModelInput
- 
+
  const EMPTY_DRAFT: Draft = {
    displayName: '',
 -  providerSlug: '',
@@ -333,7 +333,7 @@ index 91aab0336d43fc62ff78bae4623d9b40fdfce3e6..cd56aa3fbb2a475a6f22bc8eb85c42ca
    modelId: '',
    chatCompletionsPath: 'v1/chat/completions',
  }
- 
+
 -/** Deployment-wide AI Gateway custom-provider model catalog editor. */
 +/** Deployment-wide AI Gateway model catalog editor. */
  export default function AiGatewayCustomModelsPanel({
@@ -351,7 +351,7 @@ index 91aab0336d43fc62ff78bae4623d9b40fdfce3e6..cd56aa3fbb2a475a6f22bc8eb85c42ca
 +          Make a model from an AI Gateway provider available to everyone. Provider credentials stay
 +          in AI Gateway and are never entered here.
          </p>
- 
+
          <div className="grid gap-4 sm:grid-cols-2">
 @@ -92,8 +92,8 @@ export default function AiGatewayCustomModelsPanel({
              <Input value={draft.displayName} onChange={(event) => update('displayName', event.target.value)} placeholder="My coding model" />
@@ -376,7 +376,7 @@ index 91aab0336d43fc62ff78bae4623d9b40fdfce3e6..cd56aa3fbb2a475a6f22bc8eb85c42ca
          <div className="mt-5 flex justify-end gap-2">
            {editingId && <Button variant="ghost" size="sm" onClick={reset} disabled={busy}>Cancel</Button>}
 @@ -117,20 +119,20 @@ export default function AiGatewayCustomModelsPanel({
- 
+
        <div className="bg-kumo-elevated border border-kumo-line rounded-xl divide-y divide-kumo-line">
          {models.length === 0 ? (
 -          <p className="p-6 text-sm text-kumo-subtle">No deployment custom models configured.</p>
@@ -406,7 +406,7 @@ index 72a1260465d6f16225f254d3660167148ffe86b9..5390677077592115ce908715580e8800
 @@ -846,14 +846,17 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
  /** Maximum width or height of an admin-uploaded site logo in pixels. */
  export const MAX_SITE_LOGO_DIMENSION = 512;
- 
+
 -/** One deployment-managed model served by a custom provider configured on AI Gateway. */
 +/** One deployment-managed model served through a provider configured on AI Gateway. */
  export type AdminAiGatewayCustomModel = {
@@ -427,7 +427,7 @@ index 72a1260465d6f16225f254d3660167148ffe86b9..5390677077592115ce908715580e8800
 @@ -1195,14 +1198,14 @@ export type DirectAiModelConfig = {
    apiUrl?: string;
  };
- 
+
 -/** Server-resolved configuration for a deployment AI Gateway custom-provider model. */
 +/** Server-resolved configuration for a deployment-managed AI Gateway model. */
  export type AiGatewayCustomModelConfig = {
@@ -443,6 +443,6 @@ index 72a1260465d6f16225f254d3660167148ffe86b9..5390677077592115ce908715580e8800
    /** Validated relative OpenAI Chat Completions endpoint path. */
    chatCompletionsPath: string;
  };
--- 
+--
 2.53.0
 

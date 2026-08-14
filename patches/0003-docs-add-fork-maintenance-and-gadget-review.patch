@@ -371,6 +371,6 @@ index 0000000000000000000000000000000000000000..7910c7841e35f832ee07028b1a59dd6b
 +- No tracked `.env`, certificate, key, or database files found.
 +- No permissive CORS or disabled TLS-verification patterns found.
 +- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
--- 
+--
 2.53.0
 
