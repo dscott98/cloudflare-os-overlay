@@ -208,7 +208,7 @@ index 81a2b1ab60ca5505c93fd3a8a87fdbf12e173fbf..f84abf6cb604f850c90a49de24ca5d03
     */
    formats: FormatCuration[];
 +
-+  // Models supplied to every user through already-configured AI Gateway custom providers.
++  /** Models supplied to every user through already-configured AI Gateway custom providers. */
 +  aiGatewayCustomModels: AdminAiGatewayCustomModel[];
  };
 
@@ -221,10 +221,11 @@ index 81a2b1ab60ca5505c93fd3a8a87fdbf12e173fbf..f84abf6cb604f850c90a49de24ca5d03
  };
 
  /**
-@@ -101,6 +105,95 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+@@ -101,6 +105,98 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
  export const MAX_AGENT_HINT = 400;
 
  // Accept a stored format entry only if it is well-formed.
++/** Prefix reserved for deployment-managed AI Gateway model identifiers. */
 +export const AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX = "aig-custom:";
 +const MAX_CUSTOM_MODEL_DISPLAY_NAME = 120;
 +const MAX_CUSTOM_MODEL_SLUG = 64;
@@ -240,8 +241,10 @@ index 81a2b1ab60ca5505c93fd3a8a87fdbf12e173fbf..f84abf6cb604f850c90a49de24ca5d03
 +  return id.startsWith(AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX);
 +}
 +
-+// Validate the persisted/admin-supplied entry. This returns a normalized copy rather than mutating
-+// the input so the parser can safely drop malformed legacy entries.
++/**
++ * Validate the persisted/admin-supplied entry, returning a normalized copy so the parser can
++ * safely drop malformed legacy entries without mutating its input.
++ */
 +export function normalizeAiGatewayCustomModel(value: unknown): AdminAiGatewayCustomModel | undefined {
 +  if (!value || typeof value !== "object") return undefined;
 +  let {id, displayName, providerSlug, modelId, chatCompletionsPath} =
