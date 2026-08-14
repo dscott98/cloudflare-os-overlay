@@ -1,3 +1,4 @@
 96fe2e99d609fc391e412bb6168c7ad89a003962ccded3ceaf3969f19731d04d  patches/0001-feat-add-deployment-AI-Gateway-custom-models.patch
 eb1681ad4a479038f2803df3aeeda345720b221501271b9aec4b1b4bbc9ddbc8  patches/0002-feat-allow-native-AI-Gateway-provider-routes.patch
 40948a494dd068ca7a1364eece6581cbf173363b729ad6858e7498b9a9c1f0ae  patches/0003-docs-add-fork-maintenance-and-gadget-review.patch
+6671593f673ff2bf3308114d2e5a79c63f1cf162901ef6916bd4f87827f669fa  patches/0004-fix-hide-deployment-model-editor-without-gateway.patch

@@ -21,4 +21,24 @@ if [[ -n $(git -C "$submodule" status --porcelain) ]]; then
 fi
 
 ( cd "$root" && sha256sum -c PATCHES.sha256 )
-printf 'Verified upstream pin, clean submodule, and patch checksums.\n'
+
+# Verify the checked artifacts are also an applicable ordered series, without changing the pinned
+# submodule. A checksum alone cannot detect a patch whose context no longer applies to the pin.
+worktree_parent=$(mktemp -d)
+worktree="$worktree_parent/candidate"
+cleanup() {
+  git -C "$submodule" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  rm -rf "$worktree_parent"
+}
+trap cleanup EXIT
+
+git -C "$submodule" worktree add --detach "$worktree" "$expected" >/dev/null
+git -C "$worktree" am --3way "$root"/patches/*.patch >/dev/null
+
+# Test the exact reconstructed candidate, not the clean upstream submodule. `lint` includes the
+# type/build check in this workspace; `test` runs the repository's unit and integration suites.
+pnpm --dir "$worktree" install --frozen-lockfile
+pnpm --dir "$worktree" lint
+pnpm --dir "$worktree" test
+
+printf 'Verified upstream pin, clean submodule, patch checksums, patch application, and tests.\n'
