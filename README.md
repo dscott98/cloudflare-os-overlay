@@ -28,6 +28,42 @@ git am --3way "$overlay_dir"/patches/*.patch
 
 The result is the candidate source tree. Configure secrets in your own account; this overlay never contains credentials or deployment state.
 
+## Run locally
+
+Run the reconstructed candidate source tree, **not** the pristine `cloudflare-os` submodule. The local stack uses Wrangler and workerd; it does not deploy anything to a Cloudflare account.
+
+Prerequisites:
+
+- Node.js 22 or newer
+- [pnpm](https://pnpm.io/) 11.17.0 (the version pinned by the workspace)
+
+From the patched candidate directory:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run-local
+```
+
+Open [http://localhost:8787](http://localhost:8787). Register with the username `admin` to access the local admin features. Stop the server with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Wrangler persists local state in the candidate's `.wrangler/` directory; remove that directory to reset the instance.
+
+No credentials are needed to start and explore the UI. AI inference and OAuth-backed connectors require your own credentials in a gitignored `.dev.vars` file in the candidate root. Do not commit that file. See the upstream [external-service configuration](https://github.com/cloudflare/cloudflare-os#configuring-external-services) instructions and each relevant `packages/gatekeeper-*/README.md` before adding connector credentials.
+
+For a development loop with a Vite frontend instead of the production-style local bundle, use two terminals:
+
+```sh
+# Terminal 1
+pnpm dev-server
+
+# Terminal 2
+pnpm dev-client
+```
+
+Then open [http://localhost:3000](http://localhost:3000). To run the candidate's test suite:
+
+```sh
+pnpm test
+```
+
 ## Local maintainer workflow
 
 The `cloudflare-os` submodule is an unmodified source pin. Initialize it before verifying, do not edit it in place, and use `scripts/apply-patches.sh` on a separate clean clone/worktree to produce a build candidate.
