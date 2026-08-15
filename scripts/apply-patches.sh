@@ -32,5 +32,12 @@ verify_checksums() {
 }
 
 ( cd "$root" && verify_checksums )
+
+# Provide a committer identity for environments without git user config.
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Overlay Maintainer}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-maintainer@local}"
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Overlay Maintainer}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-maintainer@local}"
+
 git -C "$target" am --3way "$root"/patches/*.patch
 printf 'Applied overlay patches to %s\n' "$target"

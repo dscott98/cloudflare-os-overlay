@@ -33,6 +33,12 @@ verify_checksums() {
 
 ( cd "$root" && verify_checksums )
 
+# Provide a committer identity for environments (such as CI runners) without git user config.
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Overlay Verifier}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-verifier@local}"
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Overlay Verifier}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-verifier@local}"
+
 # Verify the checked artifacts are also an applicable ordered series, without changing the pinned
 # submodule. A checksum alone cannot detect a patch whose context no longer applies to the pin.
 worktree_parent=$(mktemp -d)

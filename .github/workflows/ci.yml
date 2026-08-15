@@ -30,4 +30,9 @@ jobs:
           cache-dependency-path: 'cloudflare-os/pnpm-lock.yaml'
 
       - name: Verify release candidate
+        env:
+          GIT_COMMITTER_NAME: "GitHub Actions"
+          GIT_COMMITTER_EMAIL: "actions@github.com"
+          GIT_AUTHOR_NAME: "GitHub Actions"
+          GIT_AUTHOR_EMAIL: "actions@github.com"
         run: ./scripts/verify-release.sh
