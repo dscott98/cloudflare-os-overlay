@@ -1,162 +1,72 @@
-From 39909f93c1ef2fc2bf332a6d245644284539d7d9 Mon Sep 17 00:00:00 2001
+From be2e24bddf07eb5ccdf47a8a18204d09cc736056 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Tue, 11 Aug 2026 08:34:23 -0700
-Subject: [PATCH] docs: add fork maintenance and gadget review
+Subject: [PATCH 3/5] docs: add fork maintenance and gadget review
 
 ---
- DOWNSTREAM.md                         | 141 +++++++++++++++++
+ DOWNSTREAM.md                         |  51 +++++++
  docs/gadgets-implementation-review.md | 208 ++++++++++++++++++++++++++
- 2 files changed, 349 insertions(+)
+ 2 files changed, 259 insertions(+)
  create mode 100644 DOWNSTREAM.md
  create mode 100644 docs/gadgets-implementation-review.md
 
 diff --git a/DOWNSTREAM.md b/DOWNSTREAM.md
 new file mode 100644
-index 0000000..a0461f6
+index 0000000..febf4e8
 --- /dev/null
 +++ b/DOWNSTREAM.md
-@@ -0,0 +1,141 @@
-+# Maintaining this Cloudflare OS fork
+@@ -0,0 +1,51 @@
++# Maintaining Cloudflare OS overlay changes
 +
-+This repository is a downstream fork of Cloudflare OS with a deployment-specific AI Gateway custom-model feature.
++This tree incorporates downstream extensions for Cloudflare OS maintained through the [cloudflare-os-overlay](https://github.com/dscott98/cloudflare-os-overlay) repository.
 +
-+## Remote and branch layout
++## Overlay architecture
 +
-+- `upstream` — `https://github.com/cloudflare/cloudflare-os.git`; Cloudflare's source. Never push here.
-+- `origin` — `https://github.com/dscott98/cloudflare-os.git`; this fork.
-+- `custom/main` — the maintained downstream integration branch. It contains the custom feature on top of upstream.
-+- `release-*` tags — immutable deployed revisions.
++Rather than maintaining a diverging, long-lived Git fork of Cloudflare OS, downstream customizations are maintained as an ordered, checksum-verified patch series (`patches/*.patch`) pinned to an immutable upstream commit SHA (`UPSTREAM.json`).
 +
-+The initial downstream feature commit is:
++## Maintenance workflow
 +
-+```text
-+3835c6d feat: add deployment AI Gateway custom models
-+```
++The overlay repository (`cloudflare-os-overlay`) provides an automated workflow to verify, update, and release downstream patches:
 +
-+## Normal development
++### 1. Upstream pin
++`UPSTREAM.json` records the exact pinned commit of `https://github.com/cloudflare/cloudflare-os.git`.
 +
-+Never work directly on the local `main` branch. Start a feature branch from `custom/main`:
++### 2. Patch series
++The `patches/` directory contains ordered `git format-patch` files:
++- `0001-feat-add-deployment-AI-Gateway-custom-models.patch`
++- `0002-feat-allow-native-AI-Gateway-provider-routes.patch`
++- `0003-docs-add-fork-maintenance-and-gadget-review.patch`
++- `0004-fix-hide-deployment-model-editor-without-gateway.patch`
++- `0005-feat-move-deployment-AI-Gateway-model-setup-into-add-dialog.patch`
 +
++Integrity is guaranteed by `PATCHES.sha256`.
++
++### 3. Verification
++In the overlay repository, run:
 +```bash
-+git switch custom/main
-+git pull --ff-only origin custom/main
-+git switch -c feature/<short-description>
++git submodule update --init --recursive
++./scripts/verify-release.sh
 +```
++This script creates a clean detached worktree at the pinned upstream commit, verifies patch SHA-256 checksums, applies the patch series, and executes the full workspace type checks, linter, and test suite.
 +
-+When the work is reviewed and tested, commit it and push the feature branch:
-+
++### 4. Applying patches to a target checkout
++To apply the overlay to an external clean clone of Cloudflare OS:
 +```bash
-+git add <intended-files>
-+git diff --cached
-+git commit -m "<meaningful description>"
-+git push -u origin HEAD
++./scripts/apply-patches.sh /path/to/clean/cloudflare-os
 +```
 +
-+Merge it into `custom/main` through a pull request on the fork. Do not push directly to `main`.
-+
-+## Before committing
-+
-+Never use `git add -A` in this repository. Add intended files explicitly, then inspect the staged diff:
-+
-+```bash
-+git diff --cached --check
-+git diff --cached
-+```
-+
-+Local environment files such as `.env.CF` are ignored. Do not force-add `.env*`, `.dev.vars*`, or `wrangler.dev.jsonc` files.
-+
-+## Updating from Cloudflare upstream
-+
-+Run this whenever you choose to adopt the latest upstream `main`:
-+
-+```bash
-+# 1. Start from a clean downstream branch.
-+git switch custom/main
-+git status --short
-+
-+# 2. Download upstream changes. This does not modify working files.
-+git fetch upstream --tags
-+
-+# 3. Preserve a local reference to the pre-update branch.
-+git branch backup/custom-main-before-update
-+
-+# 4. Replay downstream commits onto the new upstream main.
-+git rebase upstream/main
-+```
-+
-+### If Git reports a conflict
-+
-+1. See which files conflict:
-+
++### 5. Updating to a newer upstream commit
++When updating the upstream pin:
++1. Fetch latest changes from `https://github.com/cloudflare/cloudflare-os.git`.
++2. Check out the proposed upstream SHA in a clean worktree.
++3. Apply `patches/*.patch` using `git am --3way`.
++4. If conflicts occur, resolve them and regenerate the updated patch series:
 +   ```bash
-+   git status
++   git format-patch <upstream-sha> --output-directory /path/to/cloudflare-os-overlay/patches
 +   ```
-+
-+2. Open each conflicted file. Resolve the sections marked:
-+
-+   ```text
-+   <<<<<<<
-+   =======
-+   >>>>>>>
-+   ```
-+
-+3. Preserve both the new upstream behavior and the downstream custom-model feature. Pay particular attention to:
-+
-+   ```text
-+   packages/workshop-shared/src/api.ts
-+   packages/workshop-backend/src/admin-config.ts
-+   packages/workshop-backend/src/admin-settings.ts
-+   packages/workshop-backend/src/user.ts
-+   packages/workshop-backend/src/ai-models.ts
-+   packages/workshop-backend/src/server.ts
-+   ```
-+
-+4. Mark each resolved file and continue:
-+
-+   ```bash
-+   git add <resolved-file>
-+   git rebase --continue
-+   ```
-+
-+5. If the rebase becomes confusing, safely return to the state before it began:
-+
-+   ```bash
-+   git rebase --abort
-+   ```
-+
-+## Verify an upstream update
-+
-+After a successful rebase:
-+
-+```bash
-+pnpm lint && pnpm build && pnpm test
-+
-+git range-diff \
-+  upstream/main...backup/custom-main-before-update \
-+  upstream/main...custom/main
-+```
-+
-+`range-diff` shows whether rebasing unexpectedly changed the downstream patch.
-+
-+If verification succeeds, update the fork. Rebasing creates new commit IDs, so this command is expected:
-+
-+```bash
-+git push --force-with-lease origin custom/main
-+```
-+
-+`--force-with-lease` refuses to overwrite an unexpected remote update. Never force-push a release tag or release branch.
-+
-+## Creating a deployable release
-+
-+After testing the exact revision to deploy:
-+
-+```bash
-+git switch custom/main
-+git tag release-YYYY-MM-DD
-+git push origin release-YYYY-MM-DD
-+```
-+
-+Deploy that tag/commit, not an unrecorded moving branch head.
++5. Run workspace linting, type checks, and tests.
++6. Update `UPSTREAM.json`, `RELEASES.md`, the submodule pointer, and `PATCHES.sha256`.
++7. Re-run `./scripts/verify-release.sh` to confirm full release candidate verification.
 diff --git a/docs/gadgets-implementation-review.md b/docs/gadgets-implementation-review.md
 new file mode 100644
 index 0000000..7910c78

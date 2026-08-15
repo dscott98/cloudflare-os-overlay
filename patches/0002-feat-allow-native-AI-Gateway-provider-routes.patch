@@ -1,19 +1,19 @@
-From dbcdf3989c674323c9622e5b0809338469546fa3 Mon Sep 17 00:00:00 2001
+From e5b2b110c04b732d0cb322b235a60c4d99a17148 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Tue, 11 Aug 2026 06:29:03 -0700
-Subject: [PATCH] feat: allow native AI Gateway provider routes
+Subject: [PATCH 2/5] feat: allow native AI Gateway provider routes
 
 ---
- docs/public-server.md                         | 10 ++++++
- .../__tests__/admin-config.test.ts            |  7 ++--
- .../__tests__/ai-models.test.ts               | 35 +++++++++++++++++--
- packages/workshop-backend/src/admin-config.ts | 27 +++++++-------
- .../workshop-backend/src/admin-settings.ts    |  8 ++---
- packages/workshop-backend/src/ai-models.ts    | 14 ++++----
+ docs/public-server.md                         | 10 ++++
+ .../__tests__/admin-config.test.ts            |  7 +--
+ .../__tests__/ai-models.test.ts               | 51 ++++++++++++++++++-
+ packages/workshop-backend/src/admin-config.ts | 27 +++++-----
+ .../workshop-backend/src/admin-settings.ts    |  8 +--
+ packages/workshop-backend/src/ai-models.ts    | 16 +++---
  packages/workshop-backend/src/user.ts         |  2 +-
- .../components/AiGatewayCustomModelsPanel.tsx | 24 +++++++------
- packages/workshop-shared/src/api.ts           | 17 +++++----
- 9 files changed, 96 insertions(+), 48 deletions(-)
+ .../components/AiGatewayCustomModelsPanel.tsx | 24 +++++----
+ packages/workshop-shared/src/api.ts           | 17 ++++---
+ 9 files changed, 113 insertions(+), 49 deletions(-)
 
 diff --git a/docs/public-server.md b/docs/public-server.md
 index db65d57..ac094d2 100644
@@ -37,10 +37,10 @@ index db65d57..ac094d2 100644
  `pnpm run dev-server -- --use-workers-ai-binding` so the webFetch tool's document-to-Markdown
  conversion still has a `WORKERS_AI` binding. (Inference itself no longer uses the binding; it goes
 diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
-index 274aea3..5d12326 100644
+index 39dd9e8..4174f87 100644
 --- a/packages/workshop-backend/__tests__/admin-config.test.ts
 +++ b/packages/workshop-backend/__tests__/admin-config.test.ts
-@@ -55,19 +55,19 @@ describe("AI Gateway custom model config", () => {
+@@ -55,12 +55,12 @@ describe("AI Gateway custom model config", () => {
    const model = {
      id: "aig-custom:123e4567-e89b-12d3-a456-426614174000",
      displayName: "Acme Code",
@@ -55,15 +55,16 @@ index 274aea3..5d12326 100644
      let config = parseAdminConfig(JSON.stringify({
        aiGatewayCustomModels: [
          model,
-         {...model, displayName: "duplicate ID"},
-         {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174001"},
+@@ -69,7 +69,7 @@ describe("AI Gateway custom model config", () => {
          {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174002", chatCompletionsPath: "/v1/chat/completions"},
+         {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174003", chatCompletionsPath: "../chat/completions"},
+         {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174004", chatCompletionsPath: "./chat/completions"},
 -        {id: "aig-custom:not-a-uuid", displayName: "bad", providerSlug: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
 +        {id: "aig-custom:not-a-uuid", displayName: "bad", gatewayProviderRoute: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
        ],
      }));
  
-@@ -76,6 +76,7 @@ describe("AI Gateway custom model config", () => {
+@@ -78,6 +78,7 @@ describe("AI Gateway custom model config", () => {
      expect(isAiGatewayCustomModelId("aig-custom:legacy")).toBe(true);
      expect(isAiGatewayCustomModelId("model")).toBe(false);
    });
@@ -72,7 +73,7 @@ index 274aea3..5d12326 100644
  
  describe("reorderFormats", () => {
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
-index 230fdb7..40a5651 100644
+index 230fdb7..84362bf 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
 @@ -34,11 +34,18 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
@@ -95,7 +96,7 @@ index 230fdb7..40a5651 100644
  function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
    return {
      CF_AI_GATEWAY: "platform-gateway",
-@@ -223,7 +230,31 @@ describe("getModel AI Gateway routing", () => {
+@@ -223,7 +230,47 @@ describe("getModel AI Gateway routing", () => {
      expect(JSON.parse(request.body).model).toBe("acme-code-1");
    }, 15000);
  
@@ -124,12 +125,28 @@ index 230fdb7..40a5651 100644
 +    expect(JSON.parse(request.body).model).toBe("openai/gpt-5.4");
 +  }, 15000);
 +
++  it("rejects path traversal attempts in deployment model Chat Completions paths", () => {
++    expect(() => getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "openrouter",
++      model: "openai/gpt-5.4",
++      chatCompletionsPath: "../chat/completions",
++    }, INITIATOR)).toThrow("Invalid deployment AI Gateway model route.");
++
++    expect(() => getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "openrouter",
++      model: "openai/gpt-5.4",
++      chatCompletionsPath: "v1/../chat/completions",
++    }, INITIATOR)).toThrow("Invalid deployment AI Gateway model route.");
++  });
++
 +  it("sends deployment-model PDFs as OpenAI Chat Completions image data URLs", async () => {
      const handle = getModel(env(), CUSTOM_PROVIDER_CONFIG, INITIATOR);
      const stream = await handle.stream(handle.model, {
        messages: [{
 diff --git a/packages/workshop-backend/src/admin-config.ts b/packages/workshop-backend/src/admin-config.ts
-index 4b94bd1..2351c62 100644
+index 6fa8514..bea70ca 100644
 --- a/packages/workshop-backend/src/admin-config.ts
 +++ b/packages/workshop-backend/src/admin-config.ts
 @@ -108,12 +108,12 @@ export const MAX_AGENT_HINT = 400;
@@ -196,7 +213,7 @@ index 4b94bd1..2351c62 100644
      modelId: entry.modelId,
      chatCompletionsPath: entry.chatCompletionsPath,
    };
-@@ -188,7 +189,7 @@ function parseAiGatewayCustomModels(value: unknown): AdminAiGatewayCustomModel[]
+@@ -189,7 +190,7 @@ function parseAiGatewayCustomModels(value: unknown): AdminAiGatewayCustomModel[]
    for (let rawEntry of value) {
      let entry = normalizeAiGatewayCustomModel(rawEntry);
      if (!entry || ids.has(entry.id)) continue;
@@ -246,7 +263,7 @@ index a857db4..edfd87d 100644
        let aiGatewayCustomModels = [...config.aiGatewayCustomModels];
        aiGatewayCustomModels[index] = replacement;
 diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
-index 6447a3c..cc4c22f 100644
+index 6447a3c..184bb13 100644
 --- a/packages/workshop-backend/src/ai-models.ts
 +++ b/packages/workshop-backend/src/ai-models.ts
 @@ -371,7 +371,7 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
@@ -270,8 +287,9 @@ index 6447a3c..cc4c22f 100644
 -  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.providerSlug) || path.length < 2 ||
 +  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.gatewayProviderRoute) || path.length < 2 ||
        path.at(-2) !== "chat" || path.at(-1) !== "completions" ||
-       path.some(segment => !/^[A-Za-z0-9._~-]+$/.test(segment))) {
+-      path.some(segment => !/^[A-Za-z0-9._~-]+$/.test(segment))) {
 -    throw new Error("Invalid deployment custom-model route.");
++      path.some(segment => segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) {
 +    throw new Error("Invalid deployment AI Gateway model route.");
    }
    let prefix = path.slice(0, -2).map(encodeURIComponent).join("/");

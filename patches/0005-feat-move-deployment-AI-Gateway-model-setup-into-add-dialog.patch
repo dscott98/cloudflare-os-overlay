@@ -1,7 +1,8 @@
-From 521c541662ed3df8ba7d1a20781f6a3a3e8978bc Mon Sep 17 00:00:00 2001
+From 51e1b1b4abfb11d383ae23fb07bca1a1230a1e07 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Fri, 14 Aug 2026 17:53:35 -0700
-Subject: [PATCH] feat: move deployment AI Gateway model setup into add dialog
+Subject: [PATCH 5/5] feat: move deployment AI Gateway model setup into add
+ dialog
 
 Consolidate the deployment-managed AI Gateway catalog controls with the existing Add AI Model dialog. The providers route now supplies the admin capability to that dialog, exposes a deployment-model choice only for gateway-enabled administrators, and uses the same dialog for edits. Deployment-model row actions retain admin-only edit/remove controls, so regular users can select but not manage shared models.
 

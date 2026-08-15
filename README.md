@@ -34,6 +34,7 @@ Patch `0005` consolidates deployment-managed AI Gateway model configuration nati
 
 - **Admin-only configuration**: The dialog and edit/delete controls are visible only to administrators when deployment AI Gateway mode is enabled (`CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_API_TOKEN`).
 - **User access**: Non-admin users can select and prompt any published model from chat without administrative privileges or API keys.
+- **Protocol compatibility**: Deployment models must speak an **OpenAI-compatible Chat Completions API** (e.g. `v1/chat/completions`). Upstream endpoints requiring proprietary wire protocols (such as Anthropic Messages or Google Vertex native APIs) must be routed through an OpenAI-compatible translation layer or native AI Gateway route.
 - **Ordered series**: Patches `0001` and `0002` implement backend storage, authorization, RPC capabilities, and AI Gateway proxy routing; patch `0005` completes the native UI workflow.
 
 ---
