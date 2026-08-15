@@ -8,6 +8,16 @@ This repository is a reviewable overlay for a pinned upstream [Cloudflare OS](ht
 - Local delta: four ordered patches in [`patches/`](patches/)
 - Integrity manifest: [`PATCHES.sha256`](PATCHES.sha256)
 
+## Deployment AI Gateway model dialog
+
+Patch `0005` puts deployment-managed AI Gateway model setup in the existing **Add AI Model** dialog. A deployment administrator opens **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and supplies the upstream model ID, display name, provider route, and relative Chat Completions path. The provider credentials remain configured only in Cloudflare AI Gateway.
+
+![Deployment AI Gateway model dialog](docs/ai-gateway-model-dialog.png)
+
+The screenshot is a local demo using non-secret placeholder Gateway values; it does not call an AI provider. The dialog is shown only to administrators when deployment AI Gateway mode is configured. Ordinary users can select published models but cannot create, edit, or remove them.
+
+`0005` is **not** standalone: it is the UI layer of the ordered patch series. Apply all patches in `patches/`; patches `0001` and `0002` provide the persisted catalog, authorization, model resolution, and AI Gateway routing. To use custom providers, configure the provider and its key in Cloudflare AI Gateway and set the deployment's required `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, and `CF_AI_GATEWAY_API_TOKEN` environment variables. No credentials are included in this overlay.
+
 ## Independently reproduce the source tree
 
 No trust in this repository's Git history is required. Clone upstream directly, verify this overlay's published checksum/signature, then apply the readable patches:
@@ -78,4 +88,4 @@ Read `.agents/skills/cloudflare-os-overlay-release/SKILL.md` before changing the
 
 ## Packaging a release
 
-A release archive must include only `UPSTREAM.json`, `patches/`, `PATCHES.sha256`, `RELEASES.md`, and this README. Publish a SHA-256 checksum and a detached signature from a documented public key. Do not include the upstream submodule, dependencies, `.dev.vars`, secrets, or local build output.
+A release archive must include only `UPSTREAM.json`, `patches/`, `PATCHES.sha256`, `RELEASES.md`, this README, and `docs/ai-gateway-model-dialog.png`. Publish a SHA-256 checksum and a detached signature from a documented public key. Do not include the upstream submodule, dependencies, `.dev.vars`, secrets, or local build output.
