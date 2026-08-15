@@ -5,7 +5,7 @@ This repository is a reviewable overlay for a pinned upstream [Cloudflare OS](ht
 ## Current release candidate
 
 - Upstream: [`d0cffe48914adff8b296f596137a8809bde89568`](UPSTREAM.json)
-- Local delta: four ordered patches in [`patches/`](patches/)
+- Local delta: five ordered patches in [`patches/`](patches/)
 - Integrity manifest: [`PATCHES.sha256`](PATCHES.sha256)
 
 ## Deployment AI Gateway model dialog
