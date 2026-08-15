@@ -1,0 +1,621 @@
+From dba90e12ee5d7c54a3fde19075e3c800d8566744 Mon Sep 17 00:00:00 2001
+From: Dustin Scott <dscott98@gmail.com>
+Date: Fri, 14 Aug 2026 17:53:35 -0700
+Subject: [PATCH] feat: move deployment AI Gateway model setup into add dialog
+
+Consolidate the deployment-managed AI Gateway catalog controls with the existing Add AI Model dialog. The providers route now supplies the admin capability to that dialog, exposes a deployment-model choice only for gateway-enabled administrators, and uses the same dialog for edits. Deployment-model row actions retain admin-only edit/remove controls, so regular users can select but not manage shared models.
+
+This is an unavoidable upstream frontend extension: deployment model configuration depends on Workshop admin RPC capabilities and must coexist with the provider catalog. A Blueprint, Gatekeeper, or deployment configuration cannot provide that authenticated, per-deployment management UI.
+---
+ .../workshop-frontend/src/AddModelModal.tsx   | 149 ++++++++++++++----
+ .../components/AiGatewayCustomModelsPanel.tsx | 146 -----------------
+ .../src/routes/providers.tsx                  |  66 +++++---
+ 3 files changed, 166 insertions(+), 195 deletions(-)
+ delete mode 100644 packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+
+diff --git a/packages/workshop-frontend/src/AddModelModal.tsx b/packages/workshop-frontend/src/AddModelModal.tsx
+index e827b97..56e155c 100644
+--- a/packages/workshop-frontend/src/AddModelModal.tsx
++++ b/packages/workshop-frontend/src/AddModelModal.tsx
+@@ -1,6 +1,15 @@
+ import { useState, useEffect } from 'react'
+ import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+-import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
++import {
++  AdminAiGatewayCustomModel,
++  AdminAiGatewayCustomModelInput,
++  AdminApi,
++  AiChatAuthorInfo,
++  AiModelConfig,
++  AiModelProvider,
++  AiGatewayInfo,
++  SUGGESTED_MODELS,
++} from '@gadgets/workshop-shared/api'
+ import { RpcStub } from 'capnweb'
+ import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+ 
+@@ -10,11 +19,15 @@ interface AddModelModalProps {
+   onSuccess: () => void
+   authenticatedApi: RpcStub<AuthenticatedApi>
+   aiConfig: AiGatewayInfo | null
++  admin?: RpcStub<AdminApi>
++  deploymentModel?: AdminAiGatewayCustomModel | null
++  onDeploymentChanged?: () => Promise<void>
+ }
+ 
+ type SelectionType =
+   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
+   | { type: 'custom', provider: AiModelProvider }
++  | { type: 'deployment' }
+ 
+ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
+   anthropic: 'Anthropic',
+@@ -50,6 +63,7 @@ function encodeSelection(provider: AiModelProvider, modelId?: string): string {
+ 
+ // Decode a Select value back into a SelectionType.
+ function decodeSelection(value: string): SelectionType {
++  if (value === 'deployment-gateway') return { type: 'deployment' }
+   if (value.startsWith('other-')) {
+     return { type: 'custom', provider: value.substring(6) as AiModelProvider }
+   }
+@@ -61,8 +75,15 @@ function decodeSelection(value: string): SelectionType {
+ }
+ 
+ // Build the flat list of options for the Select dropdown.
+-function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
++function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null, allowDeploymentModel: boolean) {
+   const options: { value: string; label: string; provider: string }[] = []
++  if (allowDeploymentModel) {
++    options.push({
++      value: 'deployment-gateway',
++      label: 'Deployment AI Gateway model...',
++      provider: 'deployment',
++    })
++  }
+   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
+ 
+   for (const provider of providerOrder) {
+@@ -89,7 +110,16 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
+   return options
+ }
+ 
+-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig }: AddModelModalProps) {
++export default function AddModelModal({
++  visible,
++  onCancel,
++  onSuccess,
++  authenticatedApi,
++  aiConfig,
++  admin,
++  deploymentModel,
++  onDeploymentChanged,
++}: AddModelModalProps) {
+   const toasts = useKumoToastManager()
+ 
+   const [loading, setLoading] = useState(false)
+@@ -110,13 +140,24 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+   const [advancedOpen, setAdvancedOpen] = useState(false)
+ 
+   const gatewayMode = aiConfig?.enabled === true
++  const editingDeploymentModel = deploymentModel != null
+   const enabledProviders: Set<string> | null = gatewayMode
+     ? new Set(aiConfig.enabledProviders)
+     : null
+ 
+-  // Reset all state when dialog closes
++  // Initialize an admin edit or reset all state whenever the dialog closes.
+   useEffect(() => {
+-    if (!visible) {
++    if (visible && deploymentModel) {
++      setSelection({ type: 'deployment' })
++      setSelectValue('deployment-gateway')
++      setModelId(deploymentModel.modelId)
++      setDisplayName(deploymentModel.displayName)
++      setApiUrl(deploymentModel.chatCompletionsPath)
++      setAccountId(deploymentModel.gatewayProviderRoute)
++      setApiToken('')
++      setErrors({})
++      setAdvancedOpen(false)
++    } else if (!visible) {
+       setSelection(null)
+       setSelectValue(undefined)
+       setModelId('')
+@@ -127,7 +168,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+       setErrors({})
+       setAdvancedOpen(false)
+     }
+-  }, [visible])
++  }, [visible, deploymentModel])
+ 
+   const handleModelSelect = (value: string) => {
+     setSelectValue(value)
+@@ -138,13 +179,22 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     if (sel.type === 'custom') {
+       setModelId('')
+       setDisplayName('')
+-    } else {
++    } else if (sel.type === 'suggested') {
+       setModelId(sel.modelId)
+       setDisplayName(sel.displayName)
++    } else {
++      setModelId('')
++      setDisplayName('')
+     }
+     setApiToken('')
+     setAccountId('')
+-    setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
++    setApiUrl(
++      sel.type === 'deployment'
++        ? 'v1/chat/completions'
++        : sel.type === 'custom' && sel.provider === 'ollama'
++          ? 'http://localhost:11434'
++          : '',
++    )
+   }
+ 
+   const validate = (): boolean => {
+@@ -154,13 +204,17 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+       newErrors.selection = gatewayMode ? 'Please select a provider' : 'Please select a model'
+     }
+ 
+-    if (selection?.type === 'custom') {
++    if (selection?.type === 'custom' || selection?.type === 'deployment') {
+       if (!modelId.trim()) newErrors.modelId = 'Please enter the model ID'
+       if (!displayName.trim()) newErrors.displayName = 'Please enter a display name'
+     }
++    if (selection?.type === 'deployment') {
++      if (!accountId.trim()) newErrors.accountId = 'Please enter the AI Gateway provider route'
++      if (!apiUrl.trim()) newErrors.apiUrl = 'Please enter the Chat Completions path'
++    }
+ 
+-    const isOllama = selection?.provider === 'ollama'
+-    const isCloudflare = selection?.provider === 'cloudflare'
++    const isOllama = selection?.type === 'custom' && selection.provider === 'ollama'
++    const isCloudflare = selection?.type === 'custom' && selection.provider === 'cloudflare'
+     const showCredentials = !gatewayMode
+ 
+     if (showCredentials && selection && !isOllama && !apiToken.trim()) {
+@@ -184,16 +238,26 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+ 
+     setLoading(true)
+     try {
++      if (selection!.type === 'deployment') {
++        if (!admin) throw new Error('Admin access is required to manage deployment models.')
++        const input: AdminAiGatewayCustomModelInput = {
++          displayName: displayName.trim(),
++          gatewayProviderRoute: accountId.trim(),
++          modelId: modelId.trim(),
++          chatCompletionsPath: apiUrl.trim(),
++        }
++        if (deploymentModel) await admin.updateAiGatewayCustomModel(deploymentModel.id, input)
++        else await admin.createAiGatewayCustomModel(input)
++        await onDeploymentChanged?.()
++        toasts.add({ title: deploymentModel ? 'Deployment model updated' : 'Deployment model added', variant: 'success' })
++        onSuccess()
++        return
++      }
++
+       const isSuggested = selection!.type === 'suggested'
+       const finalModelId = isSuggested ? selection!.modelId : modelId.trim()
+       const finalDisplayName = isSuggested ? selection!.displayName : displayName.trim()
+-
+-      const profile: AiChatAuthorInfo = {
+-        type: 'agent',
+-        id: finalModelId,
+-        name: finalDisplayName,
+-      }
+-
++      const profile: AiChatAuthorInfo = { type: 'agent', id: finalModelId, name: finalDisplayName }
+       const config: AiModelConfig = {
+         provider: selection!.provider,
+         model: finalModelId,
+@@ -213,11 +277,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     }
+   }
+ 
+-  const options = buildOptions(gatewayMode, enabledProviders)
+-  const showCustomFields = selection?.type === 'custom'
+-  const example = selection ? exampleModel(selection.provider) : null
+-  const isOllama = selection?.provider === 'ollama'
+-  const isCloudflare = selection?.provider === 'cloudflare'
++  const options = buildOptions(gatewayMode, enabledProviders, gatewayMode && admin != null)
++  const isDeployment = selection?.type === 'deployment'
++  const showCustomFields = selection?.type === 'custom' || isDeployment
++  const example = selection?.type === 'custom' ? exampleModel(selection.provider) : null
++  const isOllama = selection?.type === 'custom' && selection.provider === 'ollama'
++  const isCloudflare = selection?.type === 'custom' && selection.provider === 'cloudflare'
+   const showCredentials = !gatewayMode
+ 
+   // Group options by provider for rendering with visual separators.
+@@ -235,13 +300,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
+       <Dialog className="p-6" size="lg">
+         <Dialog.Title className="text-lg font-semibold mb-4">
+-          Add AI Model
++          {editingDeploymentModel ? 'Edit Deployment AI Gateway Model' : 'Add AI Model'}
+         </Dialog.Title>
+ 
+         <div className="space-y-4">
+           {/* Model / Provider selection */}
+           <Select
+             label={gatewayMode ? 'Select Provider' : 'Select Model'}
++            disabled={editingDeploymentModel}
+             className="w-full text-sm"
+             placeholder={gatewayMode ? 'Choose a provider...' : 'Choose an AI model...'}
+             value={selectValue}
+@@ -258,7 +324,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+                   <div className="h-px bg-kumo-line my-1 mx-2" />
+                 )}
+                 <div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle select-none">
+-                  {PROVIDER_LABELS[group.provider as AiModelProvider] || group.provider}
++                  {group.provider === 'deployment' ? 'Deployment' : PROVIDER_LABELS[group.provider as AiModelProvider] || group.provider}
+                 </div>
+                 {group.items.map(opt => (
+                   <Select.Option key={opt.value} value={opt.value}>
+@@ -274,8 +340,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             <>
+               <Input
+                 label="Model ID"
+-                placeholder={`e.g., ${example!.modelId}`}
+-                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
++                placeholder={isDeployment ? 'e.g., my-model' : `e.g., ${example!.modelId}`}
++                description={isDeployment ? 'The upstream model identifier sent through AI Gateway' : `The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
+                 value={modelId}
+                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
+                 error={errors.modelId}
+@@ -284,7 +350,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+ 
+               <Input
+                 label="Display Name"
+-                placeholder={`e.g., ${example!.name}`}
++                placeholder={isDeployment ? 'e.g., My coding model' : `e.g., ${example!.name}`}
+                 description="Human-readable name shown in the UI"
+                 value={displayName}
+                 onChange={(e) => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: '' })) }}
+@@ -294,6 +360,29 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             </>
+           )}
+ 
++          {isDeployment && (
++            <>
++              <Input
++                label="AI Gateway provider route"
++                placeholder="e.g., custom-my-provider"
++                description="The exact route after your gateway ID (for example, custom-my-provider or openrouter). Provider credentials stay in AI Gateway."
++                value={accountId}
++                onChange={(e) => { setAccountId(e.target.value); setErrors(prev => ({ ...prev, accountId: '' })) }}
++                error={errors.accountId}
++                variant={errors.accountId ? 'error' : 'default'}
++              />
++              <Input
++                label="Chat Completions path"
++                placeholder="e.g., v1/chat/completions"
++                description="The upstream relative path ending in chat/completions"
++                value={apiUrl}
++                onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
++                error={errors.apiUrl}
++                variant={errors.apiUrl ? 'error' : 'default'}
++              />
++            </>
++          )}
++
+           {/* Cloudflare account ID (the Workers AI REST endpoint is account-scoped) */}
+           {showCredentials && isCloudflare && (
+             <Input
+@@ -308,7 +397,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+           )}
+ 
+           {/* API Token */}
+-          {showCredentials && selection && (
++          {showCredentials && selection && selection.type !== 'deployment' && (
+             <SensitiveInput
+               label="API Token"
+               placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
+@@ -372,7 +461,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             loading={loading}
+             disabled={!selection}
+           >
+-            Add Model
++            {editingDeploymentModel ? 'Save Model' : 'Add Model'}
+           </Button>
+         </div>
+       </Dialog>
+diff --git a/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+deleted file mode 100644
+index cd56aa3..0000000
+--- a/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
++++ /dev/null
+@@ -1,146 +0,0 @@
+-import { useState } from 'react'
+-import { Button, Input, useKumoToastManager } from '@cloudflare/kumo'
+-import { RpcStub } from 'capnweb'
+-import {
+-  AdminAiGatewayCustomModel,
+-  AdminAiGatewayCustomModelInput,
+-  AdminApi,
+-} from '@gadgets/workshop-shared/api'
+-
+-type Draft = AdminAiGatewayCustomModelInput
+-
+-const EMPTY_DRAFT: Draft = {
+-  displayName: '',
+-  gatewayProviderRoute: '',
+-  modelId: '',
+-  chatCompletionsPath: 'v1/chat/completions',
+-}
+-
+-/** Deployment-wide AI Gateway model catalog editor. */
+-export default function AiGatewayCustomModelsPanel({
+-  admin,
+-  models,
+-  onChanged,
+-}: {
+-  admin: RpcStub<AdminApi>
+-  models: AdminAiGatewayCustomModel[]
+-  onChanged: () => Promise<void>
+-}) {
+-  const toasts = useKumoToastManager()
+-  const [editingId, setEditingId] = useState<string | null>(null)
+-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
+-  const [busy, setBusy] = useState(false)
+-  const [deletingId, setDeletingId] = useState<string | null>(null)
+-
+-  const update = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+-    setDraft((current) => ({ ...current, [key]: value }))
+-  }
+-
+-  const reset = () => {
+-    setEditingId(null)
+-    setDraft(EMPTY_DRAFT)
+-  }
+-
+-  const save = async () => {
+-    setBusy(true)
+-    try {
+-      if (editingId) await admin.updateAiGatewayCustomModel(editingId, draft)
+-      else await admin.createAiGatewayCustomModel(draft)
+-      await onChanged()
+-      reset()
+-      toasts.add({ title: editingId ? 'Model updated' : 'Model added', variant: 'success' })
+-    } catch (err) {
+-      toasts.add({
+-        title: err instanceof Error ? err.message : 'Could not save custom model',
+-        variant: 'error',
+-      })
+-    } finally {
+-      setBusy(false)
+-    }
+-  }
+-
+-  const remove = async (model: AdminAiGatewayCustomModel) => {
+-    if (!confirm(`Remove deployment model "${model.displayName}"? Existing chats using it will no longer run.`)) return
+-    setDeletingId(model.id)
+-    try {
+-      await admin.deleteAiGatewayCustomModel(model.id)
+-      await onChanged()
+-      if (editingId === model.id) reset()
+-      toasts.add({ title: 'Model removed', variant: 'success' })
+-    } catch (err) {
+-      toasts.add({
+-        title: err instanceof Error ? err.message : 'Could not remove custom model',
+-        variant: 'error',
+-      })
+-    } finally {
+-      setDeletingId(null)
+-    }
+-  }
+-
+-  return (
+-    <div className="space-y-5">
+-      <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+-        <h2 className="text-lg font-semibold text-kumo-strong mb-1">AI Gateway models</h2>
+-        <p className="text-sm text-kumo-subtle mb-5">
+-          Make a model from an AI Gateway provider available to everyone. Provider credentials stay
+-          in AI Gateway and are never entered here.
+-        </p>
+-
+-        <div className="grid gap-4 sm:grid-cols-2">
+-          <label className="space-y-1.5 text-sm text-kumo-default">
+-            Display name
+-            <Input value={draft.displayName} onChange={(event) => update('displayName', event.target.value)} placeholder="My coding model" />
+-          </label>
+-          <label className="space-y-1.5 text-sm text-kumo-default">
+-            AI Gateway provider route
+-            <Input value={draft.gatewayProviderRoute} onChange={(event) => update('gatewayProviderRoute', event.target.value)} placeholder="openrouter" />
+-          </label>
+-          <label className="space-y-1.5 text-sm text-kumo-default">
+-            Model ID
+-            <Input value={draft.modelId} onChange={(event) => update('modelId', event.target.value)} placeholder="my-model" />
+-          </label>
+-          <label className="space-y-1.5 text-sm text-kumo-default">
+-            Chat Completions path
+-            <Input value={draft.chatCompletionsPath} onChange={(event) => update('chatCompletionsPath', event.target.value)} placeholder="v1/chat/completions" />
+-          </label>
+-        </div>
+-        <p className="mt-3 text-xs text-kumo-subtle">
+-          Enter the exact provider route after your gateway ID: <code>openrouter</code> for the
+-          native provider or <code>custom-my-provider</code> for a custom provider. Enter the
+-          upstream relative Chat Completions path, such as <code>v1/chat/completions</code>.
+-        </p>
+-        <div className="mt-5 flex justify-end gap-2">
+-          {editingId && <Button variant="ghost" size="sm" onClick={reset} disabled={busy}>Cancel</Button>}
+-          <Button variant="primary" size="sm" onClick={save} loading={busy}>
+-            {editingId ? 'Save model' : 'Add model'}
+-          </Button>
+-        </div>
+-      </div>
+-
+-      <div className="bg-kumo-elevated border border-kumo-line rounded-xl divide-y divide-kumo-line">
+-        {models.length === 0 ? (
+-          <p className="p-6 text-sm text-kumo-subtle">No deployment AI Gateway models configured.</p>
+-        ) : models.map((model) => (
+-          <div key={model.id} className="flex flex-wrap items-center gap-3 p-4">
+-            <div className="min-w-0 flex-1">
+-              <p className="truncate text-sm font-medium text-kumo-default">{model.displayName}</p>
+-              <p className="mt-0.5 truncate font-mono text-xs text-kumo-subtle">
+-                {model.gatewayProviderRoute} / {model.modelId} · {model.chatCompletionsPath}
+-              </p>
+-            </div>
+-            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} onClick={() => {
+-              setEditingId(model.id)
+-              setDraft({
+-                displayName: model.displayName,
+-                gatewayProviderRoute: model.gatewayProviderRoute,
+-                modelId: model.modelId,
+-                chatCompletionsPath: model.chatCompletionsPath,
+-              })
+-            }}>Edit</Button>
+-            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} loading={deletingId === model.id} onClick={() => remove(model)}>Remove</Button>
+-          </div>
+-        ))}
+-      </div>
+-    </div>
+-  )
+-}
+diff --git a/packages/workshop-frontend/src/routes/providers.tsx b/packages/workshop-frontend/src/routes/providers.tsx
+index 0746838..391d73d 100644
+--- a/packages/workshop-frontend/src/routes/providers.tsx
++++ b/packages/workshop-frontend/src/routes/providers.tsx
+@@ -21,7 +21,6 @@ import {
+ import AddModelModal from '../AddModelModal'
+ import { useDocumentTitle } from '../useDocumentTitle'
+ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
+-import AiGatewayCustomModelsPanel from '../components/AiGatewayCustomModelsPanel'
+ 
+ export const Route = createFileRoute('/providers')({ component: ProvidersPage })
+ 
+@@ -42,6 +41,7 @@ function ModelRow({
+   isBuiltIn,
+   isDeploymentManaged,
+   onDelete,
++  onEditDeployment,
+   onSetQuick,
+ }: {
+   model: AiChatAuthorInfo
+@@ -49,6 +49,7 @@ function ModelRow({
+   isBuiltIn: boolean
+   isDeploymentManaged: boolean
+   onDelete: () => void
++  onEditDeployment?: () => void
+   onSetQuick: () => void
+ }) {
+   return (
+@@ -116,6 +117,17 @@ function ModelRow({
+               <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
+               {isQuick ? 'Clear quick model' : 'Set as quick model'}
+             </DropdownMenu.Item>
++            {isDeploymentManaged && onEditDeployment && (
++              <>
++                <DropdownMenu.Item onClick={onEditDeployment} className={MENU_ITEM}>
++                  Edit deployment model
++                </DropdownMenu.Item>
++                <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
++                  <Trash size={13} className="mr-2" />
++                  Remove deployment model
++                </DropdownMenu.Item>
++              </>
++            )}
+             {!isBuiltIn && !isDeploymentManaged && (
+               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
+                 <Trash size={13} className="mr-2" />
+@@ -153,6 +165,7 @@ function ProvidersPage() {
+   const [loading, setLoading] = useState(true)
+   const [loadError, setLoadError] = useState(false)
+   const [sheetOpen, setSheetOpen] = useState(false)
++  const [editingDeploymentModel, setEditingDeploymentModel] = useState<AdminAiGatewayCustomModel | null>(null)
+   const [deletingId, setDeletingId] = useState<string | null>(null)
+   // Wrapped because an RPC stub is callable and React would otherwise treat it as a state updater.
+   const [admin, setAdmin] = useState<{ api: RpcStub<AdminApi> } | null>(null)
+@@ -215,15 +228,30 @@ function ProvidersPage() {
+   const isDeploymentManaged = (modelId: string): boolean =>
+     aiConfig?.enabled === true && aiConfig.deploymentModelIds.includes(modelId)
+ 
++  const refreshDeploymentModels = async () => {
++    if (admin) setAiGatewayCustomModels((await admin.api.getSettings()).aiGatewayCustomModels)
++    await fetchAll()
++  }
++
+   const handleDelete = async (model: AiChatAuthorInfo) => {
+-    if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
++    const deploymentModel = aiGatewayCustomModels.find((candidate) => candidate.id === model.id)
++    const message = deploymentModel
++      ? `Remove deployment model "${model.name}"? Existing chats using it will no longer run.`
++      : `Delete "${model.name}"? This cannot be undone.`
++    if (!confirm(message)) return
+     setDeletingId(model.id)
+     try {
+-      await authenticatedApi.deleteModel(model.id)
+-      await fetchAll()
++      if (deploymentModel) {
++        if (!admin) throw new Error('Admin access is required to remove deployment models.')
++        await admin.api.deleteAiGatewayCustomModel(deploymentModel.id)
++        await refreshDeploymentModels()
++      } else {
++        await authenticatedApi.deleteModel(model.id)
++        await fetchAll()
++      }
+     } catch (err) {
+       console.error('Failed to delete model:', err)
+-      toasts.add({ title: 'Failed to delete provider', variant: 'error' })
++      toasts.add({ title: deploymentModel ? 'Failed to remove deployment model' : 'Failed to delete provider', variant: 'error' })
+     } finally {
+       setDeletingId(null)
+     }
+@@ -315,19 +343,6 @@ function ProvidersPage() {
+           </div>
+         )}
+ 
+-        {gatewayMode && admin && (
+-          <div className="px-3 pb-4">
+-            <AiGatewayCustomModelsPanel
+-              admin={admin.api}
+-              models={aiGatewayCustomModels}
+-              onChanged={async () => {
+-                setAiGatewayCustomModels((await admin.api.getSettings()).aiGatewayCustomModels)
+-                await fetchAll()
+-              }}
+-            />
+-          </div>
+-        )}
+-
+         {/* Model list */}
+         {loading ? (
+           <div className="flex flex-col gap-0.5 px-3">
+@@ -372,6 +387,12 @@ function ProvidersPage() {
+                 isBuiltIn={isBuiltIn(model.id)}
+                 isDeploymentManaged={isDeploymentManaged(model.id)}
+                 onDelete={() => handleDelete(model)}
++                onEditDeployment={admin && isDeploymentManaged(model.id)
++                  ? () => {
++                    setEditingDeploymentModel(aiGatewayCustomModels.find((candidate) => candidate.id === model.id) ?? null)
++                    setSheetOpen(true)
++                  }
++                  : undefined}
+                 onSetQuick={() => handleSetQuick(model.id)}
+               />
+             </div>
+@@ -382,13 +403,20 @@ function ProvidersPage() {
+       {/* Add model dialog */}
+       <AddModelModal
+         visible={sheetOpen}
+-        onCancel={() => setSheetOpen(false)}
++        onCancel={() => {
++          setSheetOpen(false)
++          setEditingDeploymentModel(null)
++        }}
+         onSuccess={() => {
+           setSheetOpen(false)
++          setEditingDeploymentModel(null)
+           fetchAll()
+         }}
+         authenticatedApi={authenticatedApi}
+         aiConfig={aiConfig}
++        admin={admin?.api}
++        deploymentModel={editingDeploymentModel}
++        onDeploymentChanged={refreshDeploymentModels}
+       />
+     </div>
+   )
+-- 
+2.50.1 (Apple Git-155)
+
