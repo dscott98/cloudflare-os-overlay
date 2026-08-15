@@ -1,91 +1,111 @@
-# Cloudflare OS overlay
+# Cloudflare OS Overlay
 
-This repository is a reviewable overlay for a pinned upstream [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) revision. It deliberately contains patches and release metadata, not a modified copy of upstream source or deployment credentials.
+[![CI](https://github.com/dscott98/cloudflare-os-overlay/actions/workflows/ci.yml/badge.svg)](https://github.com/dscott98/cloudflare-os-overlay/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Upstream Pin](https://img.shields.io/badge/upstream-d0cffe4-orange)](https://github.com/cloudflare/cloudflare-os/tree/d0cffe48914adff8b296f596137a8809bde89568)
+
+A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) that adds **deployment-managed custom AI Gateway models** without maintaining a messy, long-lived fork or leaking credentials.
+
+---
+
+## Why this exists
+
+1. **Clean Overlay Pattern**: Instead of maintaining a diverging git fork with merge conflicts and untracked changes, this repo provides an immutable upstream commit pin and an ordered, checksum-verified patch series (`patches/`).
+2. **Zero-Credential AI Gateway Routing**: Deployment administrators can configure and publish custom LLM models (OpenRouter, private endpoints, custom providers) directly through Cloudflare AI Gateway. Upstream API keys stay securely inside AI Gateway—ordinary users can use the models from the UI without ever seeing or needing personal API keys.
+
+---
 
 ## Current release candidate
 
-- Upstream: [`d0cffe48914adff8b296f596137a8809bde89568`](UPSTREAM.json)
-- Local delta: five ordered patches in [`patches/`](patches/)
-- Integrity manifest: [`PATCHES.sha256`](PATCHES.sha256)
+- **Upstream commit**: [`d0cffe48914adff8b296f596137a8809bde89568`](UPSTREAM.json)
+- **Local delta**: Five ordered patches in [`patches/`](patches/)
+- **Integrity manifest**: [`PATCHES.sha256`](PATCHES.sha256)
+- **Status**: Candidate (`v0.1.0-candidate.1` in [RELEASES.md](RELEASES.md))
 
-## Deployment AI Gateway model dialog
+---
 
-Patch `0005` puts deployment-managed AI Gateway model setup in the existing **Add AI Model** dialog. A deployment administrator opens **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and supplies the upstream model ID, display name, provider route, and relative Chat Completions path. The provider credentials remain configured only in Cloudflare AI Gateway.
+## Deployment AI Gateway Model Setup
+
+Patch `0005` consolidates deployment-managed AI Gateway model configuration natively into the existing **Add AI Model** dialog. An administrator navigates to **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and provides the upstream model ID, display name, provider route, and relative Chat Completions path.
 
 ![Deployment AI Gateway model dialog](docs/ai-gateway-model-dialog.png)
 
-The screenshot is a local demo using non-secret placeholder Gateway values; it does not call an AI provider. The dialog is shown only to administrators when deployment AI Gateway mode is configured. Ordinary users can select published models but cannot create, edit, or remove them.
+*The screenshot above illustrates local UI setup with non-secret placeholder Gateway values.*
 
-`0005` is **not** standalone: it is the UI layer of the ordered patch series. Apply all patches in `patches/`; patches `0001` and `0002` provide the persisted catalog, authorization, model resolution, and AI Gateway routing. To use custom providers, configure the provider and its key in Cloudflare AI Gateway and set the deployment's required `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, and `CF_AI_GATEWAY_API_TOKEN` environment variables. No credentials are included in this overlay.
+- **Admin-only configuration**: The dialog and edit/delete controls are visible only to administrators when deployment AI Gateway mode is enabled (`CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_API_TOKEN`).
+- **User access**: Non-admin users can select and prompt any published model from chat without administrative privileges or API keys.
+- **Ordered series**: Patches `0001` and `0002` implement backend storage, authorization, RPC capabilities, and AI Gateway proxy routing; patch `0005` completes the native UI workflow.
 
-## Independently reproduce the source tree
+---
 
-No trust in this repository's Git history is required. Clone upstream directly, verify this overlay's published checksum/signature, then apply the readable patches:
+## Quickstart: Independently reproduce & run
+
+No trust in this repository's Git history is required. You can clone the pinned upstream source separately, verify the published patch checksums, and apply them:
 
 ```sh
-# Start in a verified overlay release directory.
+# 1. Clone this overlay repository
+git clone https://github.com/dscott98/cloudflare-os-overlay.git
+cd cloudflare-os-overlay
 overlay_dir=$(pwd)
 
-# Clone the pinned upstream source separately.
-git clone https://github.com/cloudflare/cloudflare-os.git cloudflare-os
-cd cloudflare-os
+# 2. Clone the pinned upstream source into a candidate directory
+git clone https://github.com/cloudflare/cloudflare-os.git ../cloudflare-os-candidate
+cd ../cloudflare-os-candidate
 git checkout d0cffe48914adff8b296f596137a8809bde89568
 
-# Verify and apply the overlay using paths relative to its release directory.
-( cd "$overlay_dir" && sha256sum -c PATCHES.sha256 )
+# 3. Verify patch checksums and apply the patch series
+( cd "$overlay_dir" && ( command -v sha256sum >/dev/null && sha256sum -c PATCHES.sha256 || shasum -a 256 -c PATCHES.sha256 ) )
 git am --3way "$overlay_dir"/patches/*.patch
 ```
 
-The result is the candidate source tree. Configure secrets in your own account; this overlay never contains credentials or deployment state.
+### Run locally with Wrangler & workerd
 
-## Run locally
-
-Run the reconstructed candidate source tree, **not** the pristine `cloudflare-os` submodule. The local stack uses Wrangler and workerd; it does not deploy anything to a Cloudflare account.
+From your reconstructed `cloudflare-os-candidate` directory:
 
 Prerequisites:
-
-- Node.js 22 or newer
-- [pnpm](https://pnpm.io/) 11.17.0 (the version pinned by the workspace)
-
-From the patched candidate directory:
+- Node.js 22+
+- [pnpm](https://pnpm.io/) 11.17.0 (pinned by upstream workspace)
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm run-local
 ```
 
-Open [http://localhost:8787](http://localhost:8787). Register with the username `admin` to access the local admin features. Stop the server with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Wrangler persists local state in the candidate's `.wrangler/` directory; remove that directory to reset the instance.
+Open [http://localhost:8787](http://localhost:8787). Register with username `admin` to access administrator features.
 
-No credentials are needed to start and explore the UI. AI inference and OAuth-backed connectors require your own credentials in a gitignored `.dev.vars` file in the candidate root. Do not commit that file. See the upstream [external-service configuration](https://github.com/cloudflare/cloudflare-os#configuring-external-services) instructions and each relevant `packages/gatekeeper-*/README.md` before adding connector credentials.
-
-For a development loop with a Vite frontend instead of the production-style local bundle, use two terminals:
-
+For active frontend development with Vite HMR:
 ```sh
-# Terminal 1
+# Terminal 1: Backend
 pnpm dev-server
 
-# Terminal 2
+# Terminal 2: Frontend
 pnpm dev-client
 ```
+Open [http://localhost:3000](http://localhost:3000).
 
-Then open [http://localhost:3000](http://localhost:3000). To run the candidate's test suite:
-
+To run the full test suite:
 ```sh
 pnpm test
 ```
 
-## Local maintainer workflow
+---
 
-The `cloudflare-os` submodule is an unmodified source pin. Initialize it before verifying, do not edit it in place, and use `scripts/apply-patches.sh` on a separate clean clone/worktree to produce a build candidate.
+## Maintainer Verification Workflow
+
+Maintainers can verify the pinned submodule, patch application, linting, and complete test suite in an isolated worktree with a single command:
 
 ```sh
 git submodule update --init --recursive
 ./scripts/verify-release.sh
+```
+
+To apply the overlay patches to a target clean worktree:
+```sh
 ./scripts/apply-patches.sh /path/to/clean/cloudflare-os
 ```
 
-Read `.agents/skills/cloudflare-os-overlay-release/SKILL.md` before changing the pin or patch series.
+---
 
-## Packaging a release
+## License
 
-A release archive must include only `UPSTREAM.json`, `patches/`, `PATCHES.sha256`, `RELEASES.md`, this README, and `docs/ai-gateway-model-dialog.png`. Publish a SHA-256 checksum and a detached signature from a documented public key. Do not include the upstream submodule, dependencies, `.dev.vars`, secrets, or local build output.
+This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
