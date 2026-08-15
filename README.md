@@ -18,7 +18,7 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 ## Current release candidate
 
 - **Upstream commit**: [`d0cffe48914adff8b296f596137a8809bde89568`](UPSTREAM.json)
-- **Local delta**: Five ordered patches in [`patches/`](patches/)
+- **Local delta**: Consolidated patch in [`patches/`](patches/)
 - **Integrity manifest**: [`PATCHES.sha256`](PATCHES.sha256)
 - **Status**: Candidate (`v0.1.0-candidate.1` in [RELEASES.md](RELEASES.md))
 
@@ -26,7 +26,7 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 
 ## Deployment AI Gateway Model Setup
 
-Patch `0005` consolidates deployment-managed AI Gateway model configuration natively into the existing **Add AI Model** dialog. An administrator navigates to **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and provides the upstream model ID, display name, provider route, and relative Chat Completions path.
+Deployment-managed AI Gateway model configuration is integrated natively into the existing **Add AI Model** dialog. An administrator navigates to **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and provides the upstream model ID, display name, provider route, and relative Chat Completions path.
 
 ![Deployment AI Gateway model dialog](docs/ai-gateway-model-dialog.png)
 
@@ -35,7 +35,7 @@ Patch `0005` consolidates deployment-managed AI Gateway model configuration nati
 - **Admin-only configuration**: The dialog and edit/delete controls are visible only to administrators when deployment AI Gateway mode is enabled (`CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, `CF_AI_GATEWAY_API_TOKEN`).
 - **User access**: Non-admin users can select and prompt any published model from chat without administrative privileges or API keys.
 - **Protocol compatibility**: Deployment models must speak an **OpenAI-compatible Chat Completions API** (e.g. `v1/chat/completions`). Upstream endpoints requiring proprietary wire protocols (such as Anthropic Messages or Google Vertex native APIs) must be routed through an OpenAI-compatible translation layer or native AI Gateway route.
-- **Ordered series**: Patches `0001` and `0002` implement backend storage, authorization, RPC capabilities, and AI Gateway proxy routing; patch `0005` completes the native UI workflow.
+- **Unified architecture**: Implements backend storage, authorization, RPC capabilities, AI Gateway proxy routing, and the native Add AI Model dialog UI workflow.
 
 ---
 

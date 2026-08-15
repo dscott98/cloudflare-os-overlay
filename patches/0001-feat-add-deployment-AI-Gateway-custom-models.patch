@@ -1,14 +1,23 @@
-From 040c518145a64326ecececdd0aee111c56ccc761 Mon Sep 17 00:00:00 2001
-From: Dustin Scott <dscott98@gmail.com>
-Date: Sat, 8 Aug 2026 19:00:57 -0700
-Subject: [PATCH 1/5] feat: add deployment AI Gateway custom models
+From 2afe0db5fe820ae8f8f69ebc0617a67905d6cba8 Mon Sep 17 00:00:00 2001
+From: Overlay Maintainer <maintainer@local>
+Date: Sat, 15 Aug 2026 05:47:26 -0700
+Subject: [PATCH] feat: add deployment AI Gateway custom models
 
+Adds deployment-managed custom AI Gateway models to Cloudflare OS:
+- Admin UI in Add AI Model dialog for configuring deployment AI Gateway models
+- Zero-credential model sharing for non-admin users
+- Support for custom OpenAI-compatible providers and native AI Gateway provider routes
+- Backend storage, verification, proxying, and admin settings
+- Integration tests and documentation
 ---
  .gitignore                                    |   1 +
- .../__tests__/admin-config.test.ts            |  31 +-
- .../__tests__/ai-models.test.ts               |  54 +++
+ DOWNSTREAM.md                                 |  51 +++
+ docs/gadgets-implementation-review.md         | 208 +++++++++++
+ docs/public-server.md                         |  10 +
+ .../__tests__/admin-config.test.ts            |  32 +-
+ .../__tests__/ai-models.test.ts               | 101 +++++
  .../__tests__/user-verifier.test.ts           |  24 ++
- packages/workshop-backend/src/admin-config.ts | 100 ++++-
+ packages/workshop-backend/src/admin-config.ts | 101 ++++-
  .../workshop-backend/src/admin-settings.ts    |  72 +++-
  .../workshop-backend/src/agent-compaction.ts  |   3 +-
  packages/workshop-backend/src/agent.ts        |   5 +-
@@ -18,12 +27,13 @@ Subject: [PATCH 1/5] feat: add deployment AI Gateway custom models
  .../src/chat-attachment-validation.ts         |   9 +-
  packages/workshop-backend/src/server.ts       |  10 +-
  packages/workshop-backend/src/user.ts         |  99 +++--
- .../components/AiGatewayCustomModelsPanel.tsx | 144 ++++++++
- .../src/routes/providers.tsx                  |  60 ++-
- packages/workshop-shared/src/api.ts           |  49 ++-
+ .../workshop-frontend/src/AddModelModal.tsx   | 149 ++++++--
+ .../src/routes/providers.tsx                  |  98 ++++-
+ packages/workshop-shared/src/api.ts           |  52 ++-
  plans/ai-gateway-custom-provider-models.md    | 349 ++++++++++++++++++
- 18 files changed, 1047 insertions(+), 50 deletions(-)
- create mode 100644 packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
+ 21 files changed, 1376 insertions(+), 85 deletions(-)
+ create mode 100644 DOWNSTREAM.md
+ create mode 100644 docs/gadgets-implementation-review.md
  create mode 100644 plans/ai-gateway-custom-provider-models.md
 
 diff --git a/.gitignore b/.gitignore
@@ -38,8 +48,300 @@ index 7ce4660..47df166 100644
  
  # Site-specific deployment configs.
  wrangler.prod.jsonc
+diff --git a/DOWNSTREAM.md b/DOWNSTREAM.md
+new file mode 100644
+index 0000000..febf4e8
+--- /dev/null
++++ b/DOWNSTREAM.md
+@@ -0,0 +1,51 @@
++# Maintaining Cloudflare OS overlay changes
++
++This tree incorporates downstream extensions for Cloudflare OS maintained through the [cloudflare-os-overlay](https://github.com/dscott98/cloudflare-os-overlay) repository.
++
++## Overlay architecture
++
++Rather than maintaining a diverging, long-lived Git fork of Cloudflare OS, downstream customizations are maintained as an ordered, checksum-verified patch series (`patches/*.patch`) pinned to an immutable upstream commit SHA (`UPSTREAM.json`).
++
++## Maintenance workflow
++
++The overlay repository (`cloudflare-os-overlay`) provides an automated workflow to verify, update, and release downstream patches:
++
++### 1. Upstream pin
++`UPSTREAM.json` records the exact pinned commit of `https://github.com/cloudflare/cloudflare-os.git`.
++
++### 2. Patch series
++The `patches/` directory contains ordered `git format-patch` files:
++- `0001-feat-add-deployment-AI-Gateway-custom-models.patch`
++- `0002-feat-allow-native-AI-Gateway-provider-routes.patch`
++- `0003-docs-add-fork-maintenance-and-gadget-review.patch`
++- `0004-fix-hide-deployment-model-editor-without-gateway.patch`
++- `0005-feat-move-deployment-AI-Gateway-model-setup-into-add-dialog.patch`
++
++Integrity is guaranteed by `PATCHES.sha256`.
++
++### 3. Verification
++In the overlay repository, run:
++```bash
++git submodule update --init --recursive
++./scripts/verify-release.sh
++```
++This script creates a clean detached worktree at the pinned upstream commit, verifies patch SHA-256 checksums, applies the patch series, and executes the full workspace type checks, linter, and test suite.
++
++### 4. Applying patches to a target checkout
++To apply the overlay to an external clean clone of Cloudflare OS:
++```bash
++./scripts/apply-patches.sh /path/to/clean/cloudflare-os
++```
++
++### 5. Updating to a newer upstream commit
++When updating the upstream pin:
++1. Fetch latest changes from `https://github.com/cloudflare/cloudflare-os.git`.
++2. Check out the proposed upstream SHA in a clean worktree.
++3. Apply `patches/*.patch` using `git am --3way`.
++4. If conflicts occur, resolve them and regenerate the updated patch series:
++   ```bash
++   git format-patch <upstream-sha> --output-directory /path/to/cloudflare-os-overlay/patches
++   ```
++5. Run workspace linting, type checks, and tests.
++6. Update `UPSTREAM.json`, `RELEASES.md`, the submodule pointer, and `PATCHES.sha256`.
++7. Re-run `./scripts/verify-release.sh` to confirm full release candidate verification.
+diff --git a/docs/gadgets-implementation-review.md b/docs/gadgets-implementation-review.md
+new file mode 100644
+index 0000000..7910c78
+--- /dev/null
++++ b/docs/gadgets-implementation-review.md
+@@ -0,0 +1,208 @@
++# Gadgets implementation review
++
++## What a Gadget is
++
++A **Gadget** is a private, full-stack personal app—not a public SaaS endpoint.
++
++It has:
++
++- `server.js`: a Cloudflare Durable Object class exported as `Gadget`
++- `client.js`: browser UI JavaScript, rendered in a sandboxed iframe
++- optional supporting `.js` modules and `README.md`
++- private Durable Object storage
++- explicitly granted external-resource bindings
++
++Important terminology: `openGadget()` and `GadgetMetadata` are historical names for a **workspace**. A workspace now contains zero or more Gadget workpieces, plus chats, Gatekeeper connections, sharing, and code history.
++
++## Runtime architecture
++
++```text
++Browser Workshop UI
++  └─ persistent Cap’n Web WebSocket RPC
++       └─ Workshop backend
++            └─ one Overseer Durable Object per workspace
++                 ├─ Yjs source-code history, chats, sharing, bindings
++                 ├─ gadget registry
++                 ├─ Gatekeeper facets / approval queue
++                 └─ one Dynamic Worker Durable Object facet per Gadget
++                      ├─ server.js
++                      ├─ private DO storage
++                      └─ explicitly injected bindings only
++
++Sandboxed iframe
++  └─ client.js ↔ MessagePort Cap’n Web RPC ↔ Gadget server facet
++```
++
++Core implementation locations:
++
++- Shared RPC contract: `packages/workshop-shared/src/api.ts`
++- Workspace kernel and gadget runtime: `packages/workshop-backend/src/overseer.ts`
++- Agent tools and Gadget authoring instructions: `packages/workshop-backend/src/agent.ts`
++- Public/authenticated workspace creation: `packages/workshop-backend/src/server.ts`
++- Iframe sandbox and RPC handshake: `packages/workshop-frontend/src/GadgetUI.tsx`
++- Full editor and multi-Gadget picker: `packages/workshop-frontend/src/GadgetEditor.tsx`
++
++## How source and state work
++
++A Gadget’s **source code** is stored in the workspace’s Yjs document.
++
++- Each Gadget has its own named Yjs root containing files.
++- Code updates are versioned, replayable, collaboratively editable, and may be proposed in a chat before acceptance.
++- Each Gadget’s **runtime state** belongs in its Durable Object storage, not memory.
++- Each Gadget gets a Dynamic Worker facet named independently from other Gadgets, so changing/testing Gadget A restarts A—not Gadget B.
++
++A newly agent-created Gadget is initially **provisional** to that chat. Its code, creation, and new bindings become permanent only when the user accepts the chat’s proposed changes. Reverting removes it.
++
++## How to build one
++
++### Use the built-in agent
++
++A typical request is simply:
++
++> “Make me a project tracker.”
++
++The agent should:
++
++1. Check available Blueprints.
++2. Call `createGadget(title, bindingName, blueprintId?)`.
++3. Write `server.js` and `client.js`.
++4. Test it through the preview.
++5. Present proposed changes for acceptance.
++
++A minimal manually authored Gadget is:
++
++```js
++// server.js
++import { DurableObject } from "cloudflare:workers";
++
++export class Gadget extends DurableObject {
++  greet(name) {
++    return `Hello, ${name}!`;
++  }
++}
++```
++
++```js
++// client.js
++const text = await gadget.greet("World");
++document.body.append(text);
++```
++
++There is no `index.html`, no public `fetch()` handler, and no normal deployment step per Gadget.
++
++### Build manually in the editor
++
++Use the workspace’s **Code** tab to edit files. The frontend syncs Yjs updates to the Overseer; the runtime loader rebuilds the relevant Gadget facet when needed.
++
++For persistent state, use normal Durable Object storage APIs in `server.js`. For real-time collaboration, clients can pass Cap’n Web callbacks to server subscription methods.
++
++## How integrations work
++
++A Gadget starts with access to nothing.
++
++External services are represented by **Gatekeepers**, not raw API keys or unrestricted network access.
++
++```text
++User connects a resource
++  → Gatekeeper capability is created in the workspace
++  → agent may use it temporarily in chat env.NAME
++  → agent calls setGadgetBinding() only if Gadget code needs it persistently
++  → Gadget server sees it as this.env.NAME
++```
++
++This distinction matters:
++
++- The agent’s `executeCode` environment is **chat-scoped**.
++- A Gadget’s `this.env` is **Gadget-scoped**.
++- Giving the agent access to GitHub does not automatically give Gadget code GitHub access.
++
++Gatekeepers enforce narrow resource scope, OAuth/account handling, observation logging, and approval queues for side effects. Gadgets can call only capabilities explicitly bound into their environment.
++
++## Security model
++
++The implementation has strong, intentional boundaries:
++
++- Dynamic Gadget workers load with `globalOutbound: null`; Gadget code cannot use the public internet.
++- The browser UI is an iframe with a restrictive CSP and no network access.
++- Browser-to-server communication is capability RPC over a MessagePort.
++- Binding names are centrally validated against JavaScript reserved words and prototype-pollution names.
++- Shared “use” collaborators receive a restricted capability that can render/interact with the UI but cannot access source, chat, bindings, or management APIs.
++- A collaborator’s third-party accounts are not implicitly shared; added bindings use the adding collaborator’s account.
++- Sensitive observations can block sharing or require Gatekeeper observer verification.
++
++Relevant files:
++
++- Dynamic worker isolation: `packages/workshop-backend/src/overseer.ts`
++- Iframe CSP: `packages/workshop-frontend/src/GadgetUI.tsx`
++- Sharing model: `docs/sharing.md`
++- Observer/information-flow design: `docs/observers.md`
++
++## Blueprints and formats
++
++A **Blueprint** is a reusable Gadget source snapshot.
++
++It includes:
++
++- source files;
++- binding requirements and guidance;
++- metadata, author, version, and optional screenshot.
++
++It does **not** include:
++
++- runtime database/storage;
++- credentials or live Gatekeeper connections;
++- chat/edit history.
++
++Users can publish, share by link, export/import `.gadget` archives, or instantiate a Blueprint after configuring their own bindings.
++
++A **format** is an admin-curated Blueprint presented as “New Doc”, “New Slides”, etc. Bundled formats live in:
++
++```text
++packages/workshop-backend/format-blueprints/
++```
++
++To update one, build it in Workshop, export it, then import it:
++
++```bash
++pnpm import:format-blueprint ~/Downloads/MyExport.gadget format.document
++```
++
++For a fork, prefer `FORMAT_BLUEPRINTS_DIR` to maintain a separate format directory rather than modifying the upstream set. See:
++
++```text
++packages/workshop-backend/format-blueprints/README.md
++docs/blueprints.md
++```
++
++## Review findings
++
++### [P1] Core Gadget lifecycle lacks active end-to-end coverage
++
++There are no active backend tests exercising `createGadget`, Dynamic Worker loading, provisional Gadget acceptance/revert, or Blueprint-to-multi-Gadget instantiation. The existing RPC integration suite at `packages/workshop-backend/__integration__/open-gadget-rpc.test.ts` is currently `describe.skip(...)`.
++
++This is the most important gap because multi-Gadget state crosses Yjs, Durable Object storage, Dynamic Worker facets, RPC capabilities, and chat replay. Add integration coverage before making major changes in this area.
++
++### [P2] The kernel seam is very large
++
++The main implementation is concentrated in:
++
++```text
++packages/workshop-backend/src/overseer.ts  # ~9.5k lines
++packages/workshop-backend/src/agent.ts     # ~3.2k lines
++```
++
++The architecture is coherent, but these will be recurring upstream-rebase conflict zones. Keep custom Gadget behavior in narrow helpers/tests rather than editing loader, replay, or capability code casually.
++
++### [P2] Workspace sharing is not per-Gadget sharing
++
++A workspace may contain many Gadgets, but sharing remains workspace-wide. A collaborator granted access can access all non-pending Gadgets in that workspace according to their role. If users need to share only one app, create it in its own workspace or share a Blueprint instead.
++
++### [P2] Persistent callbacks have a multi-Gadget limitation
++
++`ctx.restore()` calls originating from agent `executeCode` currently restore against the default/first Gadget. Avoid designing multi-Gadget automation where persistent callbacks must belong to a specific non-default Gadget until that TODO is resolved.
++
++## Security sweep
++
++- No tracked `.env`, certificate, key, or database files found.
++- No permissive CORS or disabled TLS-verification patterns found.
++- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
+diff --git a/docs/public-server.md b/docs/public-server.md
+index db65d57..ac094d2 100644
+--- a/docs/public-server.md
++++ b/docs/public-server.md
+@@ -55,6 +55,16 @@ same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it through a different Gateway
+ account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass gateways and call the Workers AI REST
+ endpoint directly (using the same account/token pair; such requests produce no cost logs).
+ 
++### Deployment AI Gateway models
++
++An administrator can publish models from the **AI providers** page. Workshop stores no upstream
++keys: configure keys and providers in Cloudflare AI Gateway, then enter the exact one-segment
++provider route after the gateway ID, the upstream model ID, and its relative Chat Completions path.
++For example, native OpenRouter uses provider route `openrouter` and path `chat/completions`, which
++routes to `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openrouter/chat/completions`.
++A custom provider with slug `acme` instead uses provider route `custom-acme`. These deployment
++models always use the deployment gateway rather than a connected user's personal gateway.
++
+ When using `CF_AI_GATEWAY*` in local development, start the server with
+ `pnpm run dev-server -- --use-workers-ai-binding` so the webFetch tool's document-to-Markdown
+ conversion still has a `WORKERS_AI` binding. (Inference itself no longer uses the binding; it goes
 diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
-index bd74bfc..39dd9e8 100644
+index bd74bfc..4174f87 100644
 --- a/packages/workshop-backend/__tests__/admin-config.test.ts
 +++ b/packages/workshop-backend/__tests__/admin-config.test.ts
 @@ -1,5 +1,5 @@
@@ -49,7 +351,7 @@ index bd74bfc..39dd9e8 100644
  
  describe("parseAdminConfig", () => {
    it("backfills fields missing from a config persisted before they existed", () => {
-@@ -51,6 +51,35 @@ describe("parseAdminConfig", () => {
+@@ -51,6 +51,36 @@ describe("parseAdminConfig", () => {
    });
  });
  
@@ -57,12 +359,12 @@ index bd74bfc..39dd9e8 100644
 +  const model = {
 +    id: "aig-custom:123e4567-e89b-12d3-a456-426614174000",
 +    displayName: "Acme Code",
-+    providerSlug: "acme-models",
++    gatewayProviderRoute: "custom-acme-models",
 +    modelId: "acme/code-1",
 +    chatCompletionsPath: "v4/chat/completions",
 +  };
 +
-+  it("keeps valid entries and drops malformed, duplicated, or legacy entries", () => {
++  it("keeps valid entries and drops malformed or duplicated entries", () => {
 +    let config = parseAdminConfig(JSON.stringify({
 +      aiGatewayCustomModels: [
 +        model,
@@ -71,7 +373,7 @@ index bd74bfc..39dd9e8 100644
 +        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174002", chatCompletionsPath: "/v1/chat/completions"},
 +        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174003", chatCompletionsPath: "../chat/completions"},
 +        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174004", chatCompletionsPath: "./chat/completions"},
-+        {id: "aig-custom:not-a-uuid", displayName: "bad", providerSlug: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
++        {id: "aig-custom:not-a-uuid", displayName: "bad", gatewayProviderRoute: "bad", modelId: "bad", chatCompletionsPath: "v1/chat/completions"},
 +      ],
 +    }));
 +
@@ -80,30 +382,38 @@ index bd74bfc..39dd9e8 100644
 +    expect(isAiGatewayCustomModelId("aig-custom:legacy")).toBe(true);
 +    expect(isAiGatewayCustomModelId("model")).toBe(false);
 +  });
++
 +});
 +
  describe("reorderFormats", () => {
    let promoted = [
      { blueprintId: "a", enabled: true },
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
-index cfad0d6..230fdb7 100644
+index cfad0d6..84362bf 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
-@@ -32,6 +32,13 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
+@@ -32,6 +32,20 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
    apiToken: "ignored-in-gateway-mode",
  };
  
 +const CUSTOM_PROVIDER_CONFIG: AiModelConfig = {
 +  provider: "ai-gateway-custom",
-+  providerSlug: "acme-models",
++  gatewayProviderRoute: "custom-acme-models",
 +  model: "acme-code-1",
 +  chatCompletionsPath: "v4/chat/completions",
++};
++
++const OPENROUTER_CONFIG: AiModelConfig = {
++  provider: "ai-gateway-custom",
++  gatewayProviderRoute: "openrouter",
++  model: "openai/gpt-5.4",
++  chatCompletionsPath: "chat/completions",
 +};
 +
  function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
    return {
      CF_AI_GATEWAY: "platform-gateway",
-@@ -188,6 +195,53 @@ describe("getModel AI Gateway routing", () => {
+@@ -188,6 +202,93 @@ describe("getModel AI Gateway routing", () => {
      });
    }, 15000);
  
@@ -135,7 +445,47 @@ index cfad0d6..230fdb7 100644
 +    expect(JSON.parse(request.body).model).toBe("acme-code-1");
 +  }, 15000);
 +
-+  it("sends custom-model PDFs as OpenAI Chat Completions image data URLs", async () => {
++  it("routes a deployment model through AI Gateway's native OpenRouter endpoint", async () => {
++    const handle = getModel(env(), OPENROUTER_CONFIG, INITIATOR, {
++      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
++      metadata: { source: "chat" },
++    });
++
++    expect(handle.model.api).toBe("openai-completions");
++    expect(handle.model.baseUrl).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/openrouter");
++    expect(handle.aiGatewayLogRoute).toEqual({
++      gateway: "platform-gateway",
++      accountId: "gateway-account-id",
++      apiToken: "gateway-token",
++    });
++
++    const request = await captureRequest(handle);
++    expect(request.url).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/" +
++        "openrouter/chat/completions");
++    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
++    expect(request.headers.get("authorization")).toBeNull();
++    expect(JSON.parse(request.body).model).toBe("openai/gpt-5.4");
++  }, 15000);
++
++  it("rejects path traversal attempts in deployment model Chat Completions paths", () => {
++    expect(() => getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "openrouter",
++      model: "openai/gpt-5.4",
++      chatCompletionsPath: "../chat/completions",
++    }, INITIATOR)).toThrow("Invalid deployment AI Gateway model route.");
++
++    expect(() => getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "openrouter",
++      model: "openai/gpt-5.4",
++      chatCompletionsPath: "v1/../chat/completions",
++    }, INITIATOR)).toThrow("Invalid deployment AI Gateway model route.");
++  });
++
++  it("sends deployment-model PDFs as OpenAI Chat Completions image data URLs", async () => {
 +    const handle = getModel(env(), CUSTOM_PROVIDER_CONFIG, INITIATOR);
 +    const stream = await handle.stream(handle.model, {
 +      messages: [{
@@ -193,7 +543,7 @@ index 3c2dc9e..9b673ed 100644
    it("returns a verifier when the connected account belongs to the expected vendor", async () => {
      const { user, verifier, verifierRequests } = makeUserWithAccount("notion");
 diff --git a/packages/workshop-backend/src/admin-config.ts b/packages/workshop-backend/src/admin-config.ts
-index 81a2b1a..6fa8514 100644
+index 81a2b1a..bea70ca 100644
 --- a/packages/workshop-backend/src/admin-config.ts
 +++ b/packages/workshop-backend/src/admin-config.ts
 @@ -8,7 +8,7 @@
@@ -223,19 +573,19 @@ index 81a2b1a..6fa8514 100644
  };
  
  /**
-@@ -101,6 +105,99 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+@@ -101,6 +105,100 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
  export const MAX_AGENT_HINT = 400;
  
  // Accept a stored format entry only if it is well-formed.
 +/** Prefix reserved for deployment-managed AI Gateway model identifiers. */
 +export const AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX = "aig-custom:";
 +const MAX_CUSTOM_MODEL_DISPLAY_NAME = 120;
-+const MAX_CUSTOM_MODEL_SLUG = 64;
++const MAX_GATEWAY_PROVIDER_ROUTE = 64;
 +const MAX_CUSTOM_MODEL_ID = 256;
 +const MAX_CUSTOM_MODEL_PATH = 256;
 +const CUSTOM_MODEL_ID = new RegExp(
 +    `^${AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`);
-+const CUSTOM_PROVIDER_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
++const GATEWAY_PROVIDER_ROUTE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 +const SAFE_PATH_SEGMENT = /^[A-Za-z0-9._~-]+$/;
 +
 +/** Whether an ID belongs to Workshop's reserved deployment-model namespace. */
@@ -249,25 +599,26 @@ index 81a2b1a..6fa8514 100644
 + */
 +export function normalizeAiGatewayCustomModel(value: unknown): AdminAiGatewayCustomModel | undefined {
 +  if (!value || typeof value !== "object") return undefined;
-+  let {id, displayName, providerSlug, modelId, chatCompletionsPath} =
++  let {id, displayName, gatewayProviderRoute, modelId, chatCompletionsPath} =
 +      value as Partial<AdminAiGatewayCustomModel>;
 +  if (typeof id !== "string" || !CUSTOM_MODEL_ID.test(id) ||
-+      typeof displayName !== "string" || typeof providerSlug !== "string" ||
++      typeof displayName !== "string" || typeof gatewayProviderRoute !== "string" ||
 +      typeof modelId !== "string" || typeof chatCompletionsPath !== "string") {
 +    return undefined;
 +  }
 +  displayName = displayName.trim();
-+  providerSlug = providerSlug.trim();
++  gatewayProviderRoute = gatewayProviderRoute.trim();
 +  modelId = modelId.trim();
 +  chatCompletionsPath = chatCompletionsPath.trim();
 +  if (!displayName || displayName.length > MAX_CUSTOM_MODEL_DISPLAY_NAME ||
-+      !providerSlug || providerSlug.length > MAX_CUSTOM_MODEL_SLUG ||
-+      !CUSTOM_PROVIDER_SLUG.test(providerSlug) || !modelId || modelId.length > MAX_CUSTOM_MODEL_ID ||
-+      chatCompletionsPath.length > MAX_CUSTOM_MODEL_PATH || hasControlCharacters(displayName) ||
-+      hasControlCharacters(modelId) || !isSafeChatCompletionsPath(chatCompletionsPath)) {
++      !gatewayProviderRoute || gatewayProviderRoute.length > MAX_GATEWAY_PROVIDER_ROUTE ||
++      !GATEWAY_PROVIDER_ROUTE.test(gatewayProviderRoute) || !modelId ||
++      modelId.length > MAX_CUSTOM_MODEL_ID || chatCompletionsPath.length > MAX_CUSTOM_MODEL_PATH ||
++      hasControlCharacters(displayName) || hasControlCharacters(modelId) ||
++      !isSafeChatCompletionsPath(chatCompletionsPath)) {
 +    return undefined;
 +  }
-+  return {id, displayName, providerSlug, modelId, chatCompletionsPath};
++  return {id, displayName, gatewayProviderRoute, modelId, chatCompletionsPath};
 +}
 +
 +/** Normalize a custom-model input or throw an error appropriate for the admin UI. */
@@ -276,11 +627,11 @@ index 81a2b1a..6fa8514 100644
 +  let entry = normalizeAiGatewayCustomModel({id: `${AI_GATEWAY_CUSTOM_MODEL_ID_PREFIX}` +
 +      "00000000-0000-0000-0000-000000000000", ...input});
 +  if (!entry) {
-+    throw new Error("Invalid custom model name, provider slug, model ID, or Chat Completions path.");
++    throw new Error("Invalid model name, AI Gateway provider route, model ID, or Chat Completions path.");
 +  }
 +  return {
 +    displayName: entry.displayName,
-+    providerSlug: entry.providerSlug,
++    gatewayProviderRoute: entry.gatewayProviderRoute,
 +    modelId: entry.modelId,
 +    chatCompletionsPath: entry.chatCompletionsPath,
 +  };
@@ -311,7 +662,7 @@ index 81a2b1a..6fa8514 100644
 +  for (let rawEntry of value) {
 +    let entry = normalizeAiGatewayCustomModel(rawEntry);
 +    if (!entry || ids.has(entry.id)) continue;
-+    let route = `${entry.providerSlug}\u0000${entry.modelId}\u0000${entry.chatCompletionsPath}`;
++    let route = `${entry.gatewayProviderRoute}\u0000${entry.modelId}\u0000${entry.chatCompletionsPath}`;
 +    if (routes.has(route)) continue;
 +    ids.add(entry.id);
 +    routes.add(route);
@@ -323,7 +674,7 @@ index 81a2b1a..6fa8514 100644
  function parseFormats(value: unknown): FormatCuration[] {
    if (!Array.isArray(value)) return [];
    let formats: FormatCuration[] = [];
-@@ -313,6 +410,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
+@@ -313,6 +411,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
        disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
        ambientGatekeeperModes,
        formats: parseFormats(p.formats),
@@ -332,7 +683,7 @@ index 81a2b1a..6fa8514 100644
    } catch {
      return { ...DEFAULT_ADMIN_CONFIG };
 diff --git a/packages/workshop-backend/src/admin-settings.ts b/packages/workshop-backend/src/admin-settings.ts
-index ac50456..a857db4 100644
+index ac50456..edfd87d 100644
 --- a/packages/workshop-backend/src/admin-settings.ts
 +++ b/packages/workshop-backend/src/admin-settings.ts
 @@ -1,4 +1,4 @@
@@ -358,7 +709,7 @@ index ac50456..a857db4 100644
  
 +function sameCustomModelRoute(
 +    left: AdminAiGatewayCustomModel, right: AdminAiGatewayCustomModel): boolean {
-+  return left.providerSlug === right.providerSlug && left.modelId === right.modelId &&
++  return left.gatewayProviderRoute === right.gatewayProviderRoute && left.modelId === right.modelId &&
 +      left.chatCompletionsPath === right.chatCompletionsPath;
 +}
 +
@@ -371,7 +722,7 @@ index ac50456..a857db4 100644
  
 +  #requireAiGateway(): void {
 +    if (!getAiGatewayConfig(this.env)) {
-+      throw new Error("A deployment AI Gateway must be configured before adding custom models.");
++      throw new Error("A deployment AI Gateway must be configured before adding models.");
 +    }
 +  }
 +
@@ -382,7 +733,7 @@ index ac50456..a857db4 100644
 +    await this.#mutateAdminConfig(config => {
 +      if (config.aiGatewayCustomModels.some(model =>
 +          model.id === entry.id || sameCustomModelRoute(model, entry))) {
-+        throw new Error("A custom model with that provider, model ID, and endpoint path already exists.");
++        throw new Error("A model with that AI Gateway provider route, model ID, and endpoint path already exists.");
 +      }
 +      return {...config, aiGatewayCustomModels: [...config.aiGatewayCustomModels, entry]};
 +    });
@@ -398,7 +749,7 @@ index ac50456..a857db4 100644
 +      let replacement: AdminAiGatewayCustomModel = {id, ...fields};
 +      if (config.aiGatewayCustomModels.some((model, candidate) =>
 +          candidate !== index && sameCustomModelRoute(model, replacement))) {
-+        throw new Error("A custom model with that provider, model ID, and endpoint path already exists.");
++        throw new Error("A model with that AI Gateway provider route, model ID, and endpoint path already exists.");
 +      }
 +      let aiGatewayCustomModels = [...config.aiGatewayCustomModels];
 +      aiGatewayCustomModels[index] = replacement;
@@ -500,7 +851,7 @@ index b065640..20aba03 100644
              // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
              // reads the real values from env. We set them to empty strings here to satisfy
 diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
-index 7f7ea8d..6447a3c 100644
+index 7f7ea8d..184bb13 100644
 --- a/packages/workshop-backend/src/ai-models.ts
 +++ b/packages/workshop-backend/src/ai-models.ts
 @@ -19,7 +19,10 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
@@ -572,7 +923,7 @@ index 7f7ea8d..6447a3c 100644
 +  if (config.provider === "ai-gateway-custom") {
 +    let gateway = getAiGatewayConfig(env);
 +    if (!gateway) throw new Error("This deployment-managed model requires an AI Gateway.");
-+    return getCustomModelViaGateway(gateway, config, initiator, options);
++    return getDeploymentModelViaGateway(gateway, config, initiator, options);
 +  }
 +
    // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
@@ -582,22 +933,22 @@ index 7f7ea8d..6447a3c 100644
    return getModelDirect(config, options.sessionAffinity);
  }
  
-+function getCustomModelViaGateway(
++function getDeploymentModelViaGateway(
 +    gwConfig: AiGatewayConfig, config: Extract<AiModelConfig, {provider: "ai-gateway-custom"}>,
 +    initiator: AiChatAuthorInfo, options: ModelRoutingOptions): ModelHandle {
 +  let path = config.chatCompletionsPath.split("/");
-+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.providerSlug) || path.length < 2 ||
++  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.gatewayProviderRoute) || path.length < 2 ||
 +      path.at(-2) !== "chat" || path.at(-1) !== "completions" ||
-+      path.some(segment => !/^[A-Za-z0-9._~-]+$/.test(segment))) {
-+    throw new Error("Invalid deployment custom-model route.");
++      path.some(segment => segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) {
++    throw new Error("Invalid deployment AI Gateway model route.");
 +  }
 +  let prefix = path.slice(0, -2).map(encodeURIComponent).join("/");
 +  let gatewayBase = `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
-+  let baseUrl = `${gatewayBase}/custom-${encodeURIComponent(config.providerSlug)}` +
++  let baseUrl = `${gatewayBase}/${encodeURIComponent(config.gatewayProviderRoute)}` +
 +      (prefix ? `/${prefix}` : "");
 +  // This contains only the public AI Gateway route, never its authorization token or upstream key.
-+  logger.info("resolved AI Gateway custom-provider route", {
-+    event: "ai_gateway.custom_model.route.resolved",
++  logger.info("resolved deployment AI Gateway model route", {
++    event: "ai_gateway.deployment_model.route.resolved",
 +    modelId: config.model,
 +    path: `${baseUrl}/chat/completions`,
 +  });
@@ -719,7 +1070,7 @@ index daeb03e..78330c4 100644
    }
  
 diff --git a/packages/workshop-backend/src/user.ts b/packages/workshop-backend/src/user.ts
-index 0322d34..bbb1aa0 100644
+index 0322d34..b597a9d 100644
 --- a/packages/workshop-backend/src/user.ts
 +++ b/packages/workshop-backend/src/user.ts
 @@ -10,7 +10,7 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
@@ -742,7 +1093,7 @@ index 0322d34..bbb1aa0 100644
 +    config: {
 +      provider: "ai-gateway-custom",
 +      model: entry.modelId,
-+      providerSlug: entry.providerSlug,
++      gatewayProviderRoute: entry.gatewayProviderRoute,
 +      chatCompletionsPath: entry.chatCompletionsPath,
 +    },
 +  };
@@ -911,158 +1262,315 @@ index 0322d34..bbb1aa0 100644
      let models = await this.listModels();
      // Prefer the existing chat's model, then the user's preferred model, then the first available model.
      let selectedModel = models.find(model => model.id === existingChatModelId)
-diff --git a/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
-new file mode 100644
-index 0000000..91aab03
---- /dev/null
-+++ b/packages/workshop-frontend/src/components/AiGatewayCustomModelsPanel.tsx
-@@ -0,0 +1,144 @@
-+import { useState } from 'react'
-+import { Button, Input, useKumoToastManager } from '@cloudflare/kumo'
-+import { RpcStub } from 'capnweb'
+diff --git a/packages/workshop-frontend/src/AddModelModal.tsx b/packages/workshop-frontend/src/AddModelModal.tsx
+index e827b97..56e155c 100644
+--- a/packages/workshop-frontend/src/AddModelModal.tsx
++++ b/packages/workshop-frontend/src/AddModelModal.tsx
+@@ -1,6 +1,15 @@
+ import { useState, useEffect } from 'react'
+ import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+-import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 +import {
 +  AdminAiGatewayCustomModel,
 +  AdminAiGatewayCustomModelInput,
 +  AdminApi,
++  AiChatAuthorInfo,
++  AiModelConfig,
++  AiModelProvider,
++  AiGatewayInfo,
++  SUGGESTED_MODELS,
 +} from '@gadgets/workshop-shared/api'
-+
-+type Draft = AdminAiGatewayCustomModelInput
-+
-+const EMPTY_DRAFT: Draft = {
-+  displayName: '',
-+  providerSlug: '',
-+  modelId: '',
-+  chatCompletionsPath: 'v1/chat/completions',
-+}
-+
-+/** Deployment-wide AI Gateway custom-provider model catalog editor. */
-+export default function AiGatewayCustomModelsPanel({
+ import { RpcStub } from 'capnweb'
+ import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+ 
+@@ -10,11 +19,15 @@ interface AddModelModalProps {
+   onSuccess: () => void
+   authenticatedApi: RpcStub<AuthenticatedApi>
+   aiConfig: AiGatewayInfo | null
++  admin?: RpcStub<AdminApi>
++  deploymentModel?: AdminAiGatewayCustomModel | null
++  onDeploymentChanged?: () => Promise<void>
+ }
+ 
+ type SelectionType =
+   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
+   | { type: 'custom', provider: AiModelProvider }
++  | { type: 'deployment' }
+ 
+ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
+   anthropic: 'Anthropic',
+@@ -50,6 +63,7 @@ function encodeSelection(provider: AiModelProvider, modelId?: string): string {
+ 
+ // Decode a Select value back into a SelectionType.
+ function decodeSelection(value: string): SelectionType {
++  if (value === 'deployment-gateway') return { type: 'deployment' }
+   if (value.startsWith('other-')) {
+     return { type: 'custom', provider: value.substring(6) as AiModelProvider }
+   }
+@@ -61,8 +75,15 @@ function decodeSelection(value: string): SelectionType {
+ }
+ 
+ // Build the flat list of options for the Select dropdown.
+-function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
++function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null, allowDeploymentModel: boolean) {
+   const options: { value: string; label: string; provider: string }[] = []
++  if (allowDeploymentModel) {
++    options.push({
++      value: 'deployment-gateway',
++      label: 'Deployment AI Gateway model...',
++      provider: 'deployment',
++    })
++  }
+   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
+ 
+   for (const provider of providerOrder) {
+@@ -89,7 +110,16 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
+   return options
+ }
+ 
+-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig }: AddModelModalProps) {
++export default function AddModelModal({
++  visible,
++  onCancel,
++  onSuccess,
++  authenticatedApi,
++  aiConfig,
 +  admin,
-+  models,
-+  onChanged,
-+}: {
-+  admin: RpcStub<AdminApi>
-+  models: AdminAiGatewayCustomModel[]
-+  onChanged: () => Promise<void>
-+}) {
-+  const toasts = useKumoToastManager()
-+  const [editingId, setEditingId] = useState<string | null>(null)
-+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
-+  const [busy, setBusy] = useState(false)
-+  const [deletingId, setDeletingId] = useState<string | null>(null)
-+
-+  const update = <K extends keyof Draft>(key: K, value: Draft[K]) => {
-+    setDraft((current) => ({ ...current, [key]: value }))
-+  }
-+
-+  const reset = () => {
-+    setEditingId(null)
-+    setDraft(EMPTY_DRAFT)
-+  }
-+
-+  const save = async () => {
-+    setBusy(true)
-+    try {
-+      if (editingId) await admin.updateAiGatewayCustomModel(editingId, draft)
-+      else await admin.createAiGatewayCustomModel(draft)
-+      await onChanged()
-+      reset()
-+      toasts.add({ title: editingId ? 'Model updated' : 'Model added', variant: 'success' })
-+    } catch (err) {
-+      toasts.add({
-+        title: err instanceof Error ? err.message : 'Could not save custom model',
-+        variant: 'error',
-+      })
-+    } finally {
-+      setBusy(false)
++  deploymentModel,
++  onDeploymentChanged,
++}: AddModelModalProps) {
+   const toasts = useKumoToastManager()
+ 
+   const [loading, setLoading] = useState(false)
+@@ -110,13 +140,24 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+   const [advancedOpen, setAdvancedOpen] = useState(false)
+ 
+   const gatewayMode = aiConfig?.enabled === true
++  const editingDeploymentModel = deploymentModel != null
+   const enabledProviders: Set<string> | null = gatewayMode
+     ? new Set(aiConfig.enabledProviders)
+     : null
+ 
+-  // Reset all state when dialog closes
++  // Initialize an admin edit or reset all state whenever the dialog closes.
+   useEffect(() => {
+-    if (!visible) {
++    if (visible && deploymentModel) {
++      setSelection({ type: 'deployment' })
++      setSelectValue('deployment-gateway')
++      setModelId(deploymentModel.modelId)
++      setDisplayName(deploymentModel.displayName)
++      setApiUrl(deploymentModel.chatCompletionsPath)
++      setAccountId(deploymentModel.gatewayProviderRoute)
++      setApiToken('')
++      setErrors({})
++      setAdvancedOpen(false)
++    } else if (!visible) {
+       setSelection(null)
+       setSelectValue(undefined)
+       setModelId('')
+@@ -127,7 +168,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+       setErrors({})
+       setAdvancedOpen(false)
+     }
+-  }, [visible])
++  }, [visible, deploymentModel])
+ 
+   const handleModelSelect = (value: string) => {
+     setSelectValue(value)
+@@ -138,13 +179,22 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     if (sel.type === 'custom') {
+       setModelId('')
+       setDisplayName('')
+-    } else {
++    } else if (sel.type === 'suggested') {
+       setModelId(sel.modelId)
+       setDisplayName(sel.displayName)
++    } else {
++      setModelId('')
++      setDisplayName('')
+     }
+     setApiToken('')
+     setAccountId('')
+-    setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
++    setApiUrl(
++      sel.type === 'deployment'
++        ? 'v1/chat/completions'
++        : sel.type === 'custom' && sel.provider === 'ollama'
++          ? 'http://localhost:11434'
++          : '',
++    )
+   }
+ 
+   const validate = (): boolean => {
+@@ -154,13 +204,17 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+       newErrors.selection = gatewayMode ? 'Please select a provider' : 'Please select a model'
+     }
+ 
+-    if (selection?.type === 'custom') {
++    if (selection?.type === 'custom' || selection?.type === 'deployment') {
+       if (!modelId.trim()) newErrors.modelId = 'Please enter the model ID'
+       if (!displayName.trim()) newErrors.displayName = 'Please enter a display name'
+     }
++    if (selection?.type === 'deployment') {
++      if (!accountId.trim()) newErrors.accountId = 'Please enter the AI Gateway provider route'
++      if (!apiUrl.trim()) newErrors.apiUrl = 'Please enter the Chat Completions path'
 +    }
-+  }
+ 
+-    const isOllama = selection?.provider === 'ollama'
+-    const isCloudflare = selection?.provider === 'cloudflare'
++    const isOllama = selection?.type === 'custom' && selection.provider === 'ollama'
++    const isCloudflare = selection?.type === 'custom' && selection.provider === 'cloudflare'
+     const showCredentials = !gatewayMode
+ 
+     if (showCredentials && selection && !isOllama && !apiToken.trim()) {
+@@ -184,16 +238,26 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+ 
+     setLoading(true)
+     try {
++      if (selection!.type === 'deployment') {
++        if (!admin) throw new Error('Admin access is required to manage deployment models.')
++        const input: AdminAiGatewayCustomModelInput = {
++          displayName: displayName.trim(),
++          gatewayProviderRoute: accountId.trim(),
++          modelId: modelId.trim(),
++          chatCompletionsPath: apiUrl.trim(),
++        }
++        if (deploymentModel) await admin.updateAiGatewayCustomModel(deploymentModel.id, input)
++        else await admin.createAiGatewayCustomModel(input)
++        await onDeploymentChanged?.()
++        toasts.add({ title: deploymentModel ? 'Deployment model updated' : 'Deployment model added', variant: 'success' })
++        onSuccess()
++        return
++      }
 +
-+  const remove = async (model: AdminAiGatewayCustomModel) => {
-+    if (!confirm(`Remove deployment model "${model.displayName}"? Existing chats using it will no longer run.`)) return
-+    setDeletingId(model.id)
-+    try {
-+      await admin.deleteAiGatewayCustomModel(model.id)
-+      await onChanged()
-+      if (editingId === model.id) reset()
-+      toasts.add({ title: 'Model removed', variant: 'success' })
-+    } catch (err) {
-+      toasts.add({
-+        title: err instanceof Error ? err.message : 'Could not remove custom model',
-+        variant: 'error',
-+      })
-+    } finally {
-+      setDeletingId(null)
-+    }
-+  }
+       const isSuggested = selection!.type === 'suggested'
+       const finalModelId = isSuggested ? selection!.modelId : modelId.trim()
+       const finalDisplayName = isSuggested ? selection!.displayName : displayName.trim()
+-
+-      const profile: AiChatAuthorInfo = {
+-        type: 'agent',
+-        id: finalModelId,
+-        name: finalDisplayName,
+-      }
+-
++      const profile: AiChatAuthorInfo = { type: 'agent', id: finalModelId, name: finalDisplayName }
+       const config: AiModelConfig = {
+         provider: selection!.provider,
+         model: finalModelId,
+@@ -213,11 +277,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     }
+   }
+ 
+-  const options = buildOptions(gatewayMode, enabledProviders)
+-  const showCustomFields = selection?.type === 'custom'
+-  const example = selection ? exampleModel(selection.provider) : null
+-  const isOllama = selection?.provider === 'ollama'
+-  const isCloudflare = selection?.provider === 'cloudflare'
++  const options = buildOptions(gatewayMode, enabledProviders, gatewayMode && admin != null)
++  const isDeployment = selection?.type === 'deployment'
++  const showCustomFields = selection?.type === 'custom' || isDeployment
++  const example = selection?.type === 'custom' ? exampleModel(selection.provider) : null
++  const isOllama = selection?.type === 'custom' && selection.provider === 'ollama'
++  const isCloudflare = selection?.type === 'custom' && selection.provider === 'cloudflare'
+   const showCredentials = !gatewayMode
+ 
+   // Group options by provider for rendering with visual separators.
+@@ -235,13 +300,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
+       <Dialog className="p-6" size="lg">
+         <Dialog.Title className="text-lg font-semibold mb-4">
+-          Add AI Model
++          {editingDeploymentModel ? 'Edit Deployment AI Gateway Model' : 'Add AI Model'}
+         </Dialog.Title>
+ 
+         <div className="space-y-4">
+           {/* Model / Provider selection */}
+           <Select
+             label={gatewayMode ? 'Select Provider' : 'Select Model'}
++            disabled={editingDeploymentModel}
+             className="w-full text-sm"
+             placeholder={gatewayMode ? 'Choose a provider...' : 'Choose an AI model...'}
+             value={selectValue}
+@@ -258,7 +324,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+                   <div className="h-px bg-kumo-line my-1 mx-2" />
+                 )}
+                 <div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle select-none">
+-                  {PROVIDER_LABELS[group.provider as AiModelProvider] || group.provider}
++                  {group.provider === 'deployment' ? 'Deployment' : PROVIDER_LABELS[group.provider as AiModelProvider] || group.provider}
+                 </div>
+                 {group.items.map(opt => (
+                   <Select.Option key={opt.value} value={opt.value}>
+@@ -274,8 +340,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             <>
+               <Input
+                 label="Model ID"
+-                placeholder={`e.g., ${example!.modelId}`}
+-                description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
++                placeholder={isDeployment ? 'e.g., my-model' : `e.g., ${example!.modelId}`}
++                description={isDeployment ? 'The upstream model identifier sent through AI Gateway' : `The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
+                 value={modelId}
+                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
+                 error={errors.modelId}
+@@ -284,7 +350,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+ 
+               <Input
+                 label="Display Name"
+-                placeholder={`e.g., ${example!.name}`}
++                placeholder={isDeployment ? 'e.g., My coding model' : `e.g., ${example!.name}`}
+                 description="Human-readable name shown in the UI"
+                 value={displayName}
+                 onChange={(e) => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: '' })) }}
+@@ -294,6 +360,29 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             </>
+           )}
+ 
++          {isDeployment && (
++            <>
++              <Input
++                label="AI Gateway provider route"
++                placeholder="e.g., custom-my-provider"
++                description="The exact route after your gateway ID (for example, custom-my-provider or openrouter). Provider credentials stay in AI Gateway."
++                value={accountId}
++                onChange={(e) => { setAccountId(e.target.value); setErrors(prev => ({ ...prev, accountId: '' })) }}
++                error={errors.accountId}
++                variant={errors.accountId ? 'error' : 'default'}
++              />
++              <Input
++                label="Chat Completions path"
++                placeholder="e.g., v1/chat/completions"
++                description="The upstream relative path ending in chat/completions"
++                value={apiUrl}
++                onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}
++                error={errors.apiUrl}
++                variant={errors.apiUrl ? 'error' : 'default'}
++              />
++            </>
++          )}
 +
-+  return (
-+    <div className="space-y-5">
-+      <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-+        <h2 className="text-lg font-semibold text-kumo-strong mb-1">AI Gateway custom models</h2>
-+        <p className="text-sm text-kumo-subtle mb-5">
-+          Make a model from an already-configured AI Gateway custom provider available to everyone.
-+          Provider credentials stay in AI Gateway and are never entered here.
-+        </p>
-+
-+        <div className="grid gap-4 sm:grid-cols-2">
-+          <label className="space-y-1.5 text-sm text-kumo-default">
-+            Display name
-+            <Input value={draft.displayName} onChange={(event) => update('displayName', event.target.value)} placeholder="My coding model" />
-+          </label>
-+          <label className="space-y-1.5 text-sm text-kumo-default">
-+            Provider slug
-+            <Input value={draft.providerSlug} onChange={(event) => update('providerSlug', event.target.value)} placeholder="my-provider" />
-+          </label>
-+          <label className="space-y-1.5 text-sm text-kumo-default">
-+            Model ID
-+            <Input value={draft.modelId} onChange={(event) => update('modelId', event.target.value)} placeholder="my-model" />
-+          </label>
-+          <label className="space-y-1.5 text-sm text-kumo-default">
-+            Chat Completions path
-+            <Input value={draft.chatCompletionsPath} onChange={(event) => update('chatCompletionsPath', event.target.value)} placeholder="v1/chat/completions" />
-+          </label>
-+        </div>
-+        <p className="mt-3 text-xs text-kumo-subtle">
-+          Enter the upstream relative Chat Completions path, such as <code>v1/chat/completions</code> or <code>v4/chat/completions</code>.
-+        </p>
-+        <div className="mt-5 flex justify-end gap-2">
-+          {editingId && <Button variant="ghost" size="sm" onClick={reset} disabled={busy}>Cancel</Button>}
-+          <Button variant="primary" size="sm" onClick={save} loading={busy}>
-+            {editingId ? 'Save model' : 'Add model'}
-+          </Button>
-+        </div>
-+      </div>
-+
-+      <div className="bg-kumo-elevated border border-kumo-line rounded-xl divide-y divide-kumo-line">
-+        {models.length === 0 ? (
-+          <p className="p-6 text-sm text-kumo-subtle">No deployment custom models configured.</p>
-+        ) : models.map((model) => (
-+          <div key={model.id} className="flex flex-wrap items-center gap-3 p-4">
-+            <div className="min-w-0 flex-1">
-+              <p className="truncate text-sm font-medium text-kumo-default">{model.displayName}</p>
-+              <p className="mt-0.5 truncate font-mono text-xs text-kumo-subtle">
-+                {model.providerSlug} / {model.modelId} · {model.chatCompletionsPath}
-+              </p>
-+            </div>
-+            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} onClick={() => {
-+              setEditingId(model.id)
-+              setDraft({
-+                displayName: model.displayName,
-+                providerSlug: model.providerSlug,
-+                modelId: model.modelId,
-+                chatCompletionsPath: model.chatCompletionsPath,
-+              })
-+            }}>Edit</Button>
-+            <Button variant="ghost" size="sm" disabled={busy || deletingId === model.id} loading={deletingId === model.id} onClick={() => remove(model)}>Remove</Button>
-+          </div>
-+        ))}
-+      </div>
-+    </div>
-+  )
-+}
+           {/* Cloudflare account ID (the Workers AI REST endpoint is account-scoped) */}
+           {showCredentials && isCloudflare && (
+             <Input
+@@ -308,7 +397,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+           )}
+ 
+           {/* API Token */}
+-          {showCredentials && selection && (
++          {showCredentials && selection && selection.type !== 'deployment' && (
+             <SensitiveInput
+               label="API Token"
+               placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
+@@ -372,7 +461,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
+             loading={loading}
+             disabled={!selection}
+           >
+-            Add Model
++            {editingDeploymentModel ? 'Save Model' : 'Add Model'}
+           </Button>
+         </div>
+       </Dialog>
 diff --git a/packages/workshop-frontend/src/routes/providers.tsx b/packages/workshop-frontend/src/routes/providers.tsx
-index 92be1d3..750817d 100644
+index 92be1d3..391d73d 100644
 --- a/packages/workshop-frontend/src/routes/providers.tsx
 +++ b/packages/workshop-frontend/src/routes/providers.tsx
 @@ -1,8 +1,11 @@
@@ -1077,20 +1585,13 @@ index 92be1d3..750817d 100644
    AiChatAuthorInfo,
    AiGatewayInfo,
    AiModelProvider,
-@@ -18,6 +21,7 @@ import {
- import AddModelModal from '../AddModelModal'
- import { useDocumentTitle } from '../useDocumentTitle'
- import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
-+import AiGatewayCustomModelsPanel from '../components/AiGatewayCustomModelsPanel'
- 
- export const Route = createFileRoute('/providers')({ component: ProvidersPage })
- 
-@@ -36,12 +40,14 @@ function ModelRow({
+@@ -36,13 +39,17 @@ function ModelRow({
    model,
    isQuick,
    isBuiltIn,
 +  isDeploymentManaged,
    onDelete,
++  onEditDeployment,
    onSetQuick,
  }: {
    model: AiChatAuthorInfo
@@ -1098,9 +1599,11 @@ index 92be1d3..750817d 100644
    isBuiltIn: boolean
 +  isDeploymentManaged: boolean
    onDelete: () => void
++  onEditDeployment?: () => void
    onSetQuick: () => void
  }) {
-@@ -75,6 +81,11 @@ function ModelRow({
+   return (
+@@ -75,6 +82,11 @@ function ModelRow({
                built-in
              </span>
            )}
@@ -1112,16 +1615,27 @@ index 92be1d3..750817d 100644
            {isQuick && (
              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[rgba(255,72,1,0.10)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-brand">
                <Lightning size={9} weight="fill" />
-@@ -105,7 +116,7 @@ function ModelRow({
+@@ -105,7 +117,18 @@ function ModelRow({
                <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
                {isQuick ? 'Clear quick model' : 'Set as quick model'}
              </DropdownMenu.Item>
 -            {!isBuiltIn && (
++            {isDeploymentManaged && onEditDeployment && (
++              <>
++                <DropdownMenu.Item onClick={onEditDeployment} className={MENU_ITEM}>
++                  Edit deployment model
++                </DropdownMenu.Item>
++                <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
++                  <Trash size={13} className="mr-2" />
++                  Remove deployment model
++                </DropdownMenu.Item>
++              </>
++            )}
 +            {!isBuiltIn && !isDeploymentManaged && (
                <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
                  <Trash size={13} className="mr-2" />
                  Delete provider
-@@ -133,7 +144,7 @@ function Notice({ children }: { children: React.ReactNode }) {
+@@ -133,7 +156,7 @@ function Notice({ children }: { children: React.ReactNode }) {
  function ProvidersPage() {
    useDocumentTitle('AI Providers')
  
@@ -1130,9 +1644,11 @@ index 92be1d3..750817d 100644
    const toasts = useKumoToastManager()
    const [models, setModels] = useState<AiChatAuthorInfo[]>([])
    const [quickModel, setQuickModel] = useState<string | null>(null)
-@@ -143,6 +154,9 @@ function ProvidersPage() {
+@@ -142,7 +165,11 @@ function ProvidersPage() {
+   const [loading, setLoading] = useState(true)
    const [loadError, setLoadError] = useState(false)
    const [sheetOpen, setSheetOpen] = useState(false)
++  const [editingDeploymentModel, setEditingDeploymentModel] = useState<AdminAiGatewayCustomModel | null>(null)
    const [deletingId, setDeletingId] = useState<string | null>(null)
 +  // Wrapped because an RPC stub is callable and React would otherwise treat it as a state updater.
 +  const [admin, setAdmin] = useState<{ api: RpcStub<AdminApi> } | null>(null)
@@ -1140,7 +1656,7 @@ index 92be1d3..750817d 100644
  
    const fetchAll = async () => {
      setLoadError(false)
-@@ -165,6 +179,31 @@ function ProvidersPage() {
+@@ -165,6 +192,31 @@ function ProvidersPage() {
  
    useEffect(() => { fetchAll() }, [authenticatedApi])
  
@@ -1172,60 +1688,100 @@ index 92be1d3..750817d 100644
    const gatewayMode = aiConfig?.enabled === true
  
    const isBuiltIn = (modelId: string): boolean => {
-@@ -173,6 +212,9 @@ function ProvidersPage() {
+@@ -173,15 +225,33 @@ function ProvidersPage() {
      return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])
    }
  
 +  const isDeploymentManaged = (modelId: string): boolean =>
 +    aiConfig?.enabled === true && aiConfig.deploymentModelIds.includes(modelId)
 +
-   const handleDelete = async (model: AiChatAuthorInfo) => {
-     if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
-     setDeletingId(model.id)
-@@ -273,6 +315,19 @@ function ProvidersPage() {
-           </div>
-         )}
- 
-+        {admin && (
-+          <div className="px-3 pb-4">
-+            <AiGatewayCustomModelsPanel
-+              admin={admin.api}
-+              models={aiGatewayCustomModels}
-+              onChanged={async () => {
-+                setAiGatewayCustomModels((await admin.api.getSettings()).aiGatewayCustomModels)
-+                await fetchAll()
-+              }}
-+            />
-+          </div>
-+        )}
++  const refreshDeploymentModels = async () => {
++    if (admin) setAiGatewayCustomModels((await admin.api.getSettings()).aiGatewayCustomModels)
++    await fetchAll()
++  }
 +
-         {/* Model list */}
-         {loading ? (
-           <div className="flex flex-col gap-0.5 px-3">
-@@ -315,6 +370,7 @@ function ProvidersPage() {
+   const handleDelete = async (model: AiChatAuthorInfo) => {
+-    if (!confirm(`Delete "${model.name}"? This cannot be undone.`)) return
++    const deploymentModel = aiGatewayCustomModels.find((candidate) => candidate.id === model.id)
++    const message = deploymentModel
++      ? `Remove deployment model "${model.name}"? Existing chats using it will no longer run.`
++      : `Delete "${model.name}"? This cannot be undone.`
++    if (!confirm(message)) return
+     setDeletingId(model.id)
+     try {
+-      await authenticatedApi.deleteModel(model.id)
+-      await fetchAll()
++      if (deploymentModel) {
++        if (!admin) throw new Error('Admin access is required to remove deployment models.')
++        await admin.api.deleteAiGatewayCustomModel(deploymentModel.id)
++        await refreshDeploymentModels()
++      } else {
++        await authenticatedApi.deleteModel(model.id)
++        await fetchAll()
++      }
+     } catch (err) {
+       console.error('Failed to delete model:', err)
+-      toasts.add({ title: 'Failed to delete provider', variant: 'error' })
++      toasts.add({ title: deploymentModel ? 'Failed to remove deployment model' : 'Failed to delete provider', variant: 'error' })
+     } finally {
+       setDeletingId(null)
+     }
+@@ -315,7 +385,14 @@ function ProvidersPage() {
                  model={model}
                  isQuick={quickModel === model.id}
                  isBuiltIn={isBuiltIn(model.id)}
 +                isDeploymentManaged={isDeploymentManaged(model.id)}
                  onDelete={() => handleDelete(model)}
++                onEditDeployment={admin && isDeploymentManaged(model.id)
++                  ? () => {
++                    setEditingDeploymentModel(aiGatewayCustomModels.find((candidate) => candidate.id === model.id) ?? null)
++                    setSheetOpen(true)
++                  }
++                  : undefined}
                  onSetQuick={() => handleSetQuick(model.id)}
                />
+             </div>
+@@ -326,13 +403,20 @@ function ProvidersPage() {
+       {/* Add model dialog */}
+       <AddModelModal
+         visible={sheetOpen}
+-        onCancel={() => setSheetOpen(false)}
++        onCancel={() => {
++          setSheetOpen(false)
++          setEditingDeploymentModel(null)
++        }}
+         onSuccess={() => {
+           setSheetOpen(false)
++          setEditingDeploymentModel(null)
+           fetchAll()
+         }}
+         authenticatedApi={authenticatedApi}
+         aiConfig={aiConfig}
++        admin={admin?.api}
++        deploymentModel={editingDeploymentModel}
++        onDeploymentChanged={refreshDeploymentModels}
+       />
+     </div>
+   )
 diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
-index 8fb6416..72a1260 100644
+index 8fb6416..5390677 100644
 --- a/packages/workshop-shared/src/api.ts
 +++ b/packages/workshop-shared/src/api.ts
-@@ -846,6 +846,23 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
+@@ -846,6 +846,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
  /** Maximum width or height of an admin-uploaded site logo in pixels. */
  export const MAX_SITE_LOGO_DIMENSION = 512;
  
-+/** One deployment-managed model served by a custom provider configured on AI Gateway. */
++/** One deployment-managed model served through a provider configured on AI Gateway. */
 +export type AdminAiGatewayCustomModel = {
 +  /** Stable Workshop-generated identifier selected by chats, never an upstream model ID. */
 +  id: string;
 +  /** Human-readable model name shown in Workshop. */
 +  displayName: string;
-+  /** Cloudflare AI Gateway custom-provider slug. */
-+  providerSlug: string;
++  /**
++   * Exact single-segment AI Gateway provider route. Use `custom-<slug>` for a custom provider or
++   * the native provider name (for example `openrouter`) for a native AI Gateway route.
++   */
++  gatewayProviderRoute: string;
 +  /** Upstream model identifier sent in the Chat Completions request body. */
 +  modelId: string;
 +  /** Relative OpenAI Chat Completions path, for example `v1/chat/completions`. */
@@ -1238,7 +1794,7 @@ index 8fb6416..72a1260 100644
  /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
  export type AdminSettingsView = {
    /** Whether new account signups are allowed. */
-@@ -866,6 +883,8 @@ export type AdminSettingsView = {
+@@ -866,6 +886,8 @@ export type AdminSettingsView = {
    resourceVendors: AdminResourceVendor[];
    /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
    formats: AdminFormat[];
@@ -1247,7 +1803,7 @@ index 8fb6416..72a1260 100644
  };
  
  /**
-@@ -1013,6 +1032,15 @@ export interface AdminApi {
+@@ -1013,6 +1035,15 @@ export interface AdminApi {
  
    /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
    setFormatOrder(blueprintIds: string[]): Promise<void>;
@@ -1263,7 +1819,7 @@ index 8fb6416..72a1260 100644
  }
  
  /** A partial edit to one promoted format. Absent fields are left alone. */
-@@ -1136,12 +1164,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
+@@ -1136,12 +1167,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
  export type AiGatewayInfo = {
    enabled: true;
    enabledProviders: AiModelProvider[];
@@ -1280,18 +1836,18 @@ index 8fb6416..72a1260 100644
    /** Which AI provider hosts the model? */
    provider: AiModelProvider;
  
-@@ -1165,6 +1195,21 @@ export type AiModelConfig = {
+@@ -1165,6 +1198,21 @@ export type AiModelConfig = {
    apiUrl?: string;
  };
  
-+/** Server-resolved configuration for a deployment AI Gateway custom-provider model. */
++/** Server-resolved configuration for a deployment-managed AI Gateway model. */
 +export type AiGatewayCustomModelConfig = {
-+  /** Identifies the deployment-only AI Gateway custom-provider routing branch. */
++  /** Identifies the deployment-only AI Gateway routing branch. */
 +  provider: "ai-gateway-custom";
 +  /** Raw upstream model identifier; the user-facing ID remains opaque. */
 +  model: string;
-+  /** Custom-provider slug configured in the deployment's Cloudflare AI Gateway. */
-+  providerSlug: string;
++  /** Exact validated single-segment provider route on the deployment's AI Gateway. */
++  gatewayProviderRoute: string;
 +  /** Validated relative OpenAI Chat Completions endpoint path. */
 +  chatCompletionsPath: string;
 +};
