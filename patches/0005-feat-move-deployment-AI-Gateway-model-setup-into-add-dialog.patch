@@ -1,4 +1,4 @@
-From dba90e12ee5d7c54a3fde19075e3c800d8566744 Mon Sep 17 00:00:00 2001
+From 521c541662ed3df8ba7d1a20781f6a3a3e8978bc Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Fri, 14 Aug 2026 17:53:35 -0700
 Subject: [PATCH] feat: move deployment AI Gateway model setup into add dialog

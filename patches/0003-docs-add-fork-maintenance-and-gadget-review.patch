@@ -1,7 +1,7 @@
-From 3106aca96ea2edae7cf2ce372093a0be2ff4c65c Mon Sep 17 00:00:00 2001
+From 39909f93c1ef2fc2bf332a6d245644284539d7d9 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Tue, 11 Aug 2026 08:34:23 -0700
-Subject: [PATCH 3/3] docs: add fork maintenance and gadget review
+Subject: [PATCH] docs: add fork maintenance and gadget review
 
 ---
  DOWNSTREAM.md                         | 141 +++++++++++++++++
@@ -12,7 +12,7 @@ Subject: [PATCH 3/3] docs: add fork maintenance and gadget review
 
 diff --git a/DOWNSTREAM.md b/DOWNSTREAM.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0461f68d55ac2dde9d2455b4c683193c81cfe2f
+index 0000000..a0461f6
 --- /dev/null
 +++ b/DOWNSTREAM.md
 @@ -0,0 +1,141 @@
@@ -159,7 +159,7 @@ index 0000000000000000000000000000000000000000..a0461f68d55ac2dde9d2455b4c683193
 +Deploy that tag/commit, not an unrecorded moving branch head.
 diff --git a/docs/gadgets-implementation-review.md b/docs/gadgets-implementation-review.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7910c7841e35f832ee07028b1a59dd6b9dd9a1fe
+index 0000000..7910c78
 --- /dev/null
 +++ b/docs/gadgets-implementation-review.md
 @@ -0,0 +1,208 @@
@@ -371,6 +371,6 @@ index 0000000000000000000000000000000000000000..7910c7841e35f832ee07028b1a59dd6b
 +- No tracked `.env`, certificate, key, or database files found.
 +- No permissive CORS or disabled TLS-verification patterns found.
 +- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
---
-2.53.0
+-- 
+2.50.1 (Apple Git-155)
 

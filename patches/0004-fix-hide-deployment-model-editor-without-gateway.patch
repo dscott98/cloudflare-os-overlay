@@ -1,4 +1,4 @@
-From 835d03ca37bdb4956359eea17aa1dc51f2d4700a Mon Sep 17 00:00:00 2001
+From 9a0bbc55819f1b8d0e99d44b9f5f9c0d0977c9f1 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Thu, 13 Aug 2026 21:02:30 -0700
 Subject: [PATCH] fix: hide deployment model editor without gateway

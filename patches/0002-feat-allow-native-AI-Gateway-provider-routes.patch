@@ -1,8 +1,19 @@
-From 013a88a9aa41976e1387fafaecf9e326f8bca2b8 Mon Sep 17 00:00:00 2001
+From dbcdf3989c674323c9622e5b0809338469546fa3 Mon Sep 17 00:00:00 2001
 From: Dustin Scott <dscott98@gmail.com>
 Date: Tue, 11 Aug 2026 06:29:03 -0700
-Subject: [PATCH 2/4] feat: allow native AI Gateway provider routes
+Subject: [PATCH] feat: allow native AI Gateway provider routes
 
+---
+ docs/public-server.md                         | 10 ++++++
+ .../__tests__/admin-config.test.ts            |  7 ++--
+ .../__tests__/ai-models.test.ts               | 35 +++++++++++++++++--
+ packages/workshop-backend/src/admin-config.ts | 27 +++++++-------
+ .../workshop-backend/src/admin-settings.ts    |  8 ++---
+ packages/workshop-backend/src/ai-models.ts    | 14 ++++----
+ packages/workshop-backend/src/user.ts         |  2 +-
+ .../components/AiGatewayCustomModelsPanel.tsx | 24 +++++++------
+ packages/workshop-shared/src/api.ts           | 17 +++++----
+ 9 files changed, 96 insertions(+), 48 deletions(-)
 
 diff --git a/docs/public-server.md b/docs/public-server.md
 index db65d57..ac094d2 100644
