@@ -1,0 +1,102 @@
+name: Upstream Sync & Compatibility Test
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # Daily at 06:00 UTC
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    name: Sync and Test Upstream
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: 'cloudflare-os/pnpm-lock.yaml'
+
+      - name: Run upstream sync and test
+        id: sync
+        continue-on-error: true
+        env:
+          GIT_COMMITTER_NAME: "GitHub Actions"
+          GIT_COMMITTER_EMAIL: "actions@github.com"
+          GIT_AUTHOR_NAME: "GitHub Actions"
+          GIT_AUTHOR_EMAIL: "actions@github.com"
+        run: |
+          ./scripts/sync-upstream.sh
+
+      # Case 1: Successful sync with new commits -> Open/update PR and close any old failure issues
+      - name: Create Pull Request for Updated Pin
+        if: steps.sync.outcome == 'success' && steps.sync.outputs.has_update == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(upstream): bump pin to ${{ steps.sync.outputs.latest_sha }}"
+          branch: automation/upstream-sync
+          title: "chore(upstream): bump pin to ${{ steps.sync.outputs.latest_sha }}"
+          body-path: sync-report.md
+          labels: |
+            upstream-sync
+            automated-pr
+
+      - name: Close existing failure issues if resolved
+        if: steps.sync.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find and close any open issues created by earlier sync failures
+          open_issues=$(gh issue list --label "upstream-sync-failure" --state open --json number -q '.[].number' || true)
+          for issue in $open_issues; do
+            gh issue comment "$issue" --body "✅ Upstream sync succeeded on latest commit. Closing issue."
+            gh issue close "$issue"
+          done
+
+      # Case 2: Failure during sync/test -> Open a GitHub Issue with failure report
+      - name: Open GitHub Issue on Sync Failure
+        if: steps.sync.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          short_sha="${{ steps.sync.outputs.latest_sha }}"
+          short_sha="${short_sha:0:7}"
+          title="[Action Required] Upstream sync failure at ${short_sha:-candidate}"
+          
+          # Check if an open issue already exists for this failure to avoid duplicate spam
+          existing_issue=$(gh issue list --label "upstream-sync-failure" --state open --search "$short_sha" --json number -q '.[0].number' || true)
+          
+          if [ -n "$existing_issue" ]; then
+            echo "Updating existing issue #$existing_issue..."
+            gh issue comment "$existing_issue" --body-file sync-report.md
+          else
+            echo "Creating new issue..."
+            gh issue create \
+              --title "$title" \
+              --body-file sync-report.md \
+              --label "upstream-sync-failure,bug"
+          fi
+
+      - name: Fail workflow if sync step failed
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "Sync failed! Check sync-report.md or the created issue for details."
+          exit 1
