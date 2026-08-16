@@ -167,24 +167,50 @@ fi
 
 echo "Candidate passed all checks! Updating pin..."
 
-# Update UPSTREAM.json
+# Update UPSTREAM.json, README.md, and RELEASES.md
 node -e "
   const fs = require('fs');
-  const path = '$root/UPSTREAM.json';
-  const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-  data.commit = '$latest_sha';
-  fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+  const root = '$root';
+  const prevSha = '$current_pin';
+  const newSha = '$latest_sha';
+  const prevShort = prevSha.slice(0, 7);
+  const newShort = newSha.slice(0, 7);
+  const commitCount = $commit_count;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // 1. Update UPSTREAM.json
+  const upstreamPath = root + '/UPSTREAM.json';
+  const upstreamData = JSON.parse(fs.readFileSync(upstreamPath, 'utf8'));
+  upstreamData.commit = newSha;
+  fs.writeFileSync(upstreamPath, JSON.stringify(upstreamData, null, 2) + '\n');
+
+  // 2. Compute candidate version from RELEASES.md
+  const releasesPath = root + '/RELEASES.md';
+  let releases = fs.readFileSync(releasesPath, 'utf8');
+  const candidateMatch = releases.match(/0\.1\.0-candidate\.(\d+)/);
+  const nextNum = candidateMatch ? parseInt(candidateMatch[1], 10) + 1 : 1;
+  const newCandidateVersion = '0.1.0-candidate.' + nextNum;
+
+  // Prepend new candidate entry to RELEASES table
+  const newRow = '| \`' + newCandidateVersion + '\` | \`' + newSha + '\` | candidate | Automated upstream sync (' + today + ', ' + commitCount + ' new commits). |';
+  releases = releases.replace(
+    /(| --- \| --- \| --- \| --- \|\n)/,
+    '\$1' + newRow + '\n'
+  );
+  fs.writeFileSync(releasesPath, releases);
+
+  // 3. Update README.md (badges, commit links, candidate version)
+  const readmePath = root + '/README.md';
+  let readme = fs.readFileSync(readmePath, 'utf8');
+  readme = readme
+    .replace(new RegExp('upstream-' + prevShort, 'g'), 'upstream-' + newShort)
+    .replace(new RegExp(prevSha, 'g'), newSha)
+    .replace(/Candidate \(\`0\.1\.0-candidate\.\d+\` in/, 'Candidate (\`' + newCandidateVersion + '\` in');
+  fs.writeFileSync(readmePath, readme);
 "
 
 # Update submodule pointer
 git -C "$submodule" checkout --quiet "$latest_sha"
-
-# Update RELEASES.md if needed
-today=$(date -u +"%Y-%m-%d")
-short_sha="${latest_sha:0:7}"
-sed -i.bak "s/| \`0.1.0-candidate\./| \`0.1.0-candidate.sync-${short_sha}\` | \`${latest_sha}\` | candidate | Automated upstream sync (${today})\\
-| \`0.1.0-candidate./g" "$root/RELEASES.md" 2>/dev/null || true
-rm -f "$root/RELEASES.md.bak"
 
 cat <<EOF > "$root/sync-report.md"
 ### ✅ Upstream Sync Succeeded
