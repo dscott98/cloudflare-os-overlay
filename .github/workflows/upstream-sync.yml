@@ -34,6 +34,14 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: 'cloudflare-os/pnpm-lock.yaml'
 
+      - name: Ensure automation labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "upstream-sync-failure" --color "B60205" --description "Automated upstream compatibility check failed" --force
+          gh label create "upstream-sync" --color "1D76DB" --description "Automated upstream synchronization" --force
+          gh label create "automated-pr" --color "5319E7" --description "Pull request created by automation" --force
+
       - name: Run upstream sync and test
         id: sync
         continue-on-error: true
