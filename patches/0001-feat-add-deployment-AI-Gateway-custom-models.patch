@@ -1,4 +1,4 @@
-From 2afe0db5fe820ae8f8f69ebc0617a67905d6cba8 Mon Sep 17 00:00:00 2001
+From 083e87b7ed2cb1575c6a62cc3716cd2619402087 Mon Sep 17 00:00:00 2001
 From: Overlay Maintainer <maintainer@local>
 Date: Sat, 15 Aug 2026 05:47:26 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
@@ -15,14 +15,14 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
  docs/gadgets-implementation-review.md         | 208 +++++++++++
  docs/public-server.md                         |  10 +
  .../__tests__/admin-config.test.ts            |  32 +-
- .../__tests__/ai-models.test.ts               | 101 +++++
+ .../__tests__/ai-models.test.ts               | 118 ++++++
  .../__tests__/user-verifier.test.ts           |  24 ++
  packages/workshop-backend/src/admin-config.ts | 101 ++++-
  .../workshop-backend/src/admin-settings.ts    |  72 +++-
  .../workshop-backend/src/agent-compaction.ts  |   3 +-
  packages/workshop-backend/src/agent.ts        |   5 +-
  packages/workshop-backend/src/ai-gateway.ts   |   4 +-
- packages/workshop-backend/src/ai-models.ts    |  79 +++-
+ packages/workshop-backend/src/ai-models.ts    |  91 ++++-
  .../src/chat-attachment-pdf.ts                |   4 +-
  .../src/chat-attachment-validation.ts         |   9 +-
  packages/workshop-backend/src/server.ts       |  10 +-
@@ -31,18 +31,18 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
  .../src/routes/providers.tsx                  |  98 ++++-
  packages/workshop-shared/src/api.ts           |  52 ++-
  plans/ai-gateway-custom-provider-models.md    | 349 ++++++++++++++++++
- 21 files changed, 1376 insertions(+), 85 deletions(-)
+ 21 files changed, 1405 insertions(+), 85 deletions(-)
  create mode 100644 DOWNSTREAM.md
  create mode 100644 docs/gadgets-implementation-review.md
  create mode 100644 plans/ai-gateway-custom-provider-models.md
 
 diff --git a/.gitignore b/.gitignore
-index 7ce4660..47df166 100644
+index 7e37170..4b5d398 100644
 --- a/.gitignore
 +++ b/.gitignore
-@@ -23,6 +23,7 @@ packages/workshop-backend/src/generated/browser-export-runtime.txt
+@@ -25,6 +25,7 @@ packages/workshop-backend/src/generated/browser-export-page.js
  
- # Local dev secrets (loaded by run-dev-server.js)
+ # Local dev secrets (loaded by run-dev-server.ts)
  .dev.vars*
 +.env.*
  
@@ -320,12 +320,12 @@ index 0000000..7910c78
 +- No permissive CORS or disabled TLS-verification patterns found.
 +- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
 diff --git a/docs/public-server.md b/docs/public-server.md
-index db65d57..ac094d2 100644
+index 8c8f00f..4e36485 100644
 --- a/docs/public-server.md
 +++ b/docs/public-server.md
-@@ -55,6 +55,16 @@ same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it through a different Gateway
- account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass gateways and call the Workers AI REST
- endpoint directly (using the same account/token pair; such requests produce no cost logs).
+@@ -63,6 +63,16 @@ binding (the model SDK adapter refuses the binding's fetch — note the platform
+ it, so the platform server itself still needs the token). Every provider, Workers AI included,
+ routes through the same Gateway.
  
 +### Deployment AI Gateway models
 +
@@ -338,8 +338,8 @@ index db65d57..ac094d2 100644
 +models always use the deployment gateway rather than a connected user's personal gateway.
 +
  When using `CF_AI_GATEWAY*` in local development, start the server with
- `pnpm run dev-server -- --use-workers-ai-binding` so the webFetch tool's document-to-Markdown
- conversion still has a `WORKERS_AI` binding. (Inference itself no longer uses the binding; it goes
+ `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
+ the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
 index bd74bfc..4174f87 100644
 --- a/packages/workshop-backend/__tests__/admin-config.test.ts
@@ -389,7 +389,7 @@ index bd74bfc..4174f87 100644
    let promoted = [
      { blueprintId: "a", enabled: true },
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
-index cfad0d6..84362bf 100644
+index c6e9914..9647ef7 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
 @@ -32,6 +32,20 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
@@ -413,7 +413,7 @@ index cfad0d6..84362bf 100644
  function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
    return {
      CF_AI_GATEWAY: "platform-gateway",
-@@ -188,6 +202,93 @@ describe("getModel AI Gateway routing", () => {
+@@ -182,6 +196,93 @@ describe("getModel AI Gateway routing", () => {
      });
    }, 15000);
  
@@ -507,6 +507,30 @@ index cfad0d6..84362bf 100644
    it("speaks the provider's native API on a connected user's Gateway", async () => {
      const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
        userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+@@ -339,6 +440,23 @@ describe("getModel AI Gateway binding transport", () => {
+     expect(headerNames).not.toContain("x-api-key");
+   }, 15000);
+ 
++  it("drives deployment custom models through the binding with no API token", async () => {
++    const handle = getModel(bindingEnv(), CUSTOM_PROVIDER_CONFIG, INITIATOR);
++
++    expect(handle.model.baseUrl).toBe(
++        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/custom-acme-models/v4");
++    expect(handle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
++    expect(handle.supportsPdfAttachments).toBe(true);
++
++    const entry = await captureEntry(handle);
++    expect(entry.url).toBe(
++        "https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
++        "custom-acme-models/v4/chat/completions");
++    expect(entry.headers["cf-aig-authorization"])
++        .toBe("Bearer cloudflare-gateway-binding");
++    expect((JSON.parse(entry.body) as { model: string }).model).toBe("acme-code-1");
++  }, 15000);
++
+   it("lets a per-call fetch override the binding transport", async () => {
+     // Tests and diagnostics inject options.fetch; it must win over the handle's binding fetch.
+     // The URL is the model's, so it still names the binding route -- only the transport swaps.
 diff --git a/packages/workshop-backend/__tests__/user-verifier.test.ts b/packages/workshop-backend/__tests__/user-verifier.test.ts
 index 3c2dc9e..9b673ed 100644
 --- a/packages/workshop-backend/__tests__/user-verifier.test.ts
@@ -811,7 +835,7 @@ index 590917f..c9b07e3 100644
        (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
    return {
 diff --git a/packages/workshop-backend/src/agent.ts b/packages/workshop-backend/src/agent.ts
-index 23a79d9..6fbfbad 100644
+index 5a10243..0d7f0e5 100644
 --- a/packages/workshop-backend/src/agent.ts
 +++ b/packages/workshop-backend/src/agent.ts
 @@ -1,5 +1,5 @@
@@ -821,7 +845,7 @@ index 23a79d9..6fbfbad 100644
  import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
  import { createWorkshopLogger } from "./observability";
  import * as Y from "yjs";
-@@ -1555,8 +1555,7 @@ export async function runAgent(
+@@ -1608,8 +1608,7 @@ export async function runAgent(
                      type: "text",
                      text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
                    }];
@@ -832,7 +856,7 @@ index 23a79d9..6fbfbad 100644
                    // the model handle rewrites it into the provider's native document block just
                    // before the request goes out (see chat-attachment-pdf.ts). The text part
 diff --git a/packages/workshop-backend/src/ai-gateway.ts b/packages/workshop-backend/src/ai-gateway.ts
-index b065640..20aba03 100644
+index def0930..498581d 100644
 --- a/packages/workshop-backend/src/ai-gateway.ts
 +++ b/packages/workshop-backend/src/ai-gateway.ts
 @@ -1,4 +1,4 @@
@@ -841,7 +865,7 @@ index b065640..20aba03 100644
  import { UserAiModelRecord } from "./user.js";
  
  // The model used for quick tasks like title generation when AI Gateway mode is active.
-@@ -63,7 +63,7 @@ export class AiGatewayConfig {
+@@ -119,7 +119,7 @@ export class AiGatewayConfig {
          return {
            profile: { type: "agent", id: modelId, name: models[modelId].name },
            config: {
@@ -851,7 +875,7 @@ index b065640..20aba03 100644
              // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
              // reads the real values from env. We set them to empty strings here to satisfy
 diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
-index 7f7ea8d..184bb13 100644
+index b1bb2c3..faecf41 100644
 --- a/packages/workshop-backend/src/ai-models.ts
 +++ b/packages/workshop-backend/src/ai-models.ts
 @@ -19,7 +19,10 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
@@ -897,15 +921,15 @@ index 7f7ea8d..184bb13 100644
    return {
      contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
      maxTokens: suggested?.outputLimit ??
-@@ -268,6 +279,7 @@ type HandleArgs = {
-   gatewayMetadata?: GatewayMetadata;
-   sessionAffinity?: string;
-   aiGatewayLogRoute?: AiGatewayLogRoute;
+@@ -274,6 +285,7 @@ type HandleArgs = {
+   // gateway over env.WORKERS_AI.fetch() instead of the global fetch (see bindingFetch).
+   // A per-call options.fetch still wins, which tests rely on to capture requests.
+   fetch?: FetchFunction;
 +  supportsPdfAttachments?: boolean;
  };
  
  function makeHandle(args: HandleArgs): ModelHandle {
-@@ -296,6 +308,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
+@@ -302,6 +314,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
    const handle: ModelHandle = {
      model: args.model,
      aiGatewayLogRoute: args.aiGatewayLogRoute,
@@ -914,7 +938,7 @@ index 7f7ea8d..184bb13 100644
      stream: (model, context, { thinking = true, ...options } = {}) => {
        // Never let a failed request read a previous request's response metadata.
        handle.lastResponse = undefined;
-@@ -352,6 +366,14 @@ function makeHandle(args: HandleArgs): ModelHandle {
+@@ -356,6 +370,14 @@ function makeHandle(args: HandleArgs): ModelHandle {
  export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                           initiator: AiChatAuthorInfo,
                           options: ModelRoutingOptions = {}): ModelHandle {
@@ -929,7 +953,7 @@ index 7f7ea8d..184bb13 100644
    // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
    // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
    // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
-@@ -371,6 +393,54 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+@@ -375,6 +397,66 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
    return getModelDirect(config, options.sessionAffinity);
  }
  
@@ -943,7 +967,17 @@ index 7f7ea8d..184bb13 100644
 +    throw new Error("Invalid deployment AI Gateway model route.");
 +  }
 +  let prefix = path.slice(0, -2).map(encodeURIComponent).join("/");
-+  let gatewayBase = `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
++  // Custom-provider routes use the same binding passthrough as upstream's native providers.
++  // A deployment can opt out for a cross-account gateway, in which case HTTPS uses its Run +
++  // Read token instead. The binding's identity is already scoped to the Worker's own account.
++  let binding = gwConfig.bindingFor(config.gatewayProviderRoute);
++  if (!binding && !gwConfig.apiToken) {
++    throw new Error(`Deployment provider route "${config.gatewayProviderRoute}" cannot use the ` +
++        "Workers AI binding transport, and no CF_AI_GATEWAY_API_TOKEN is configured for HTTPS.");
++  }
++  let gatewayBase = binding
++      ? `https://workers-binding.ai/ai-gateway/gateways/${gwConfig.gateway}`
++      : `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}`;
 +  let baseUrl = `${gatewayBase}/${encodeURIComponent(config.gatewayProviderRoute)}` +
 +      (prefix ? `/${prefix}` : "");
 +  // This contains only the public AI Gateway route, never its authorization token or upstream key.
@@ -966,17 +1000,19 @@ index 7f7ea8d..184bb13 100644
 +  return makeHandle({
 +    model,
 +    headers: {
-+      "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
++      "cf-aig-authorization": `Bearer ${binding
++          ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
 +      Authorization: null,
 +      "x-api-key": null,
 +    },
++    ...(binding ? {fetch: bindingFetch(binding)} : {}),
 +    gatewayMetadata: buildMetadata(initiator, options.metadata),
 +    sessionAffinity: options.sessionAffinity,
-+    aiGatewayLogRoute: {
-+      gateway: gwConfig.gateway,
-+      accountId: gwConfig.accountId,
-+      apiToken: gwConfig.apiToken,
-+    },
++    // Cost logs are same-account operations, so use the binding whenever it is active even if
++    // this model's inference has selected HTTPS.
++    aiGatewayLogRoute: gwConfig.binding
++        ? {gateway: gwConfig.gateway}
++        : {gateway: gwConfig.gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken!},
 +    supportsPdfAttachments: true,
 +  });
 +}
@@ -984,7 +1020,7 @@ index 7f7ea8d..184bb13 100644
  // Route inference through the user's own account (unified billing) via their account's default AI
  // Gateway. Supports every provider AI Gateway serves, including Workers AI. Billed to the
  // user's Cloudflare credits; no provider API key required.
-@@ -620,9 +690,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
+@@ -639,9 +721,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
          apiKey: config.apiToken,
          sessionAffinity,
        });
@@ -1044,7 +1080,7 @@ index 4f236a6..6f2c4e5 100644
    byteLength: number,
  ): void {
 diff --git a/packages/workshop-backend/src/server.ts b/packages/workshop-backend/src/server.ts
-index daeb03e..78330c4 100644
+index ebb47b8..fb3e794 100644
 --- a/packages/workshop-backend/src/server.ts
 +++ b/packages/workshop-backend/src/server.ts
 @@ -196,15 +196,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
@@ -1070,7 +1106,7 @@ index daeb03e..78330c4 100644
    }
  
 diff --git a/packages/workshop-backend/src/user.ts b/packages/workshop-backend/src/user.ts
-index 0322d34..b597a9d 100644
+index a31dd27..26c929d 100644
 --- a/packages/workshop-backend/src/user.ts
 +++ b/packages/workshop-backend/src/user.ts
 @@ -10,7 +10,7 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
@@ -1764,10 +1800,10 @@ index 92be1d3..391d73d 100644
      </div>
    )
 diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
-index 8fb6416..5390677 100644
+index d858dd2..a777544 100644
 --- a/packages/workshop-shared/src/api.ts
 +++ b/packages/workshop-shared/src/api.ts
-@@ -846,6 +846,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
+@@ -849,6 +849,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
  /** Maximum width or height of an admin-uploaded site logo in pixels. */
  export const MAX_SITE_LOGO_DIMENSION = 512;
  
@@ -1794,7 +1830,7 @@ index 8fb6416..5390677 100644
  /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
  export type AdminSettingsView = {
    /** Whether new account signups are allowed. */
-@@ -866,6 +886,8 @@ export type AdminSettingsView = {
+@@ -869,6 +889,8 @@ export type AdminSettingsView = {
    resourceVendors: AdminResourceVendor[];
    /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
    formats: AdminFormat[];
@@ -1803,7 +1839,7 @@ index 8fb6416..5390677 100644
  };
  
  /**
-@@ -1013,6 +1035,15 @@ export interface AdminApi {
+@@ -1016,6 +1038,15 @@ export interface AdminApi {
  
    /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
    setFormatOrder(blueprintIds: string[]): Promise<void>;
@@ -1819,7 +1855,7 @@ index 8fb6416..5390677 100644
  }
  
  /** A partial edit to one promoted format. Absent fields are left alone. */
-@@ -1136,12 +1167,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
+@@ -1139,12 +1170,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
  export type AiGatewayInfo = {
    enabled: true;
    enabledProviders: AiModelProvider[];
@@ -1836,7 +1872,7 @@ index 8fb6416..5390677 100644
    /** Which AI provider hosts the model? */
    provider: AiModelProvider;
  
-@@ -1165,6 +1198,21 @@ export type AiModelConfig = {
+@@ -1168,6 +1201,21 @@ export type AiModelConfig = {
    apiUrl?: string;
  };
  
@@ -2214,5 +2250,5 @@ index 0000000..92184dc
 +- Existing per-user direct/BYOK models continue to work unchanged.
 +- Removing an entry does not cause an old chat to select or execute a different model.
 -- 
-2.50.1 (Apple Git-155)
+2.53.0
 
