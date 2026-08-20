@@ -1,4 +1,4 @@
-From 083e87b7ed2cb1575c6a62cc3716cd2619402087 Mon Sep 17 00:00:00 2001
+From 3a3a76b616d2d0dbf3ef309056ac71b8324b3e5d Mon Sep 17 00:00:00 2001
 From: Overlay Maintainer <maintainer@local>
 Date: Sat, 15 Aug 2026 05:47:26 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
@@ -2250,5 +2250,5 @@ index 0000000..92184dc
 +- Existing per-user direct/BYOK models continue to work unchanged.
 +- Removing an entry does not cause an old chat to select or execute a different model.
 -- 
-2.53.0
+2.55.0
 
