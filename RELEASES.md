@@ -1,3 +1,4 @@
+| `0.1.0-candidate.5` | `b1d875034170379300e924e6fea2280852afee73` | candidate | Automated upstream sync (2026-08-21, 14 new commits). |
 # Overlay releases
 
 | Overlay version | Upstream commit | Status | Notes |
