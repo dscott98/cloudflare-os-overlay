@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/dscott98/cloudflare-os-overlay/actions/workflows/ci.yml/badge.svg)](https://github.com/dscott98/cloudflare-os-overlay/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Upstream Pin](https://img.shields.io/badge/upstream-1ef6020-orange)](https://github.com/cloudflare/cloudflare-os/tree/1ef6020a42fbabb6d27dd1063db3a075ba95c974)
+[![Upstream Pin](https://img.shields.io/badge/upstream-af56a9d-orange)](https://github.com/cloudflare/cloudflare-os/tree/af56a9d79d8a60ebed8dabb11b075cd88efc1b87)
 
 A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) that adds **deployment-managed custom AI Gateway models** without maintaining a messy, long-lived fork or leaking credentials.
 
@@ -17,10 +17,10 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 
 ## Current release candidate
 
-- **Upstream commit**: [`1ef6020a42fbabb6d27dd1063db3a075ba95c974`](UPSTREAM.json)
+- **Upstream commit**: [`af56a9d79d8a60ebed8dabb11b075cd88efc1b87`](UPSTREAM.json)
 - **Local delta**: Consolidated patch in [`patches/`](patches/)
 - **Integrity manifest**: [`PATCHES.sha256`](PATCHES.sha256)
-- **Status**: Candidate (`0.1.0-candidate.5` in [RELEASES.md](RELEASES.md))
+- **Status**: Candidate (`0.1.0-candidate.6` in [RELEASES.md](RELEASES.md))
 
 ---
 
@@ -52,7 +52,7 @@ overlay_dir=$(pwd)
 # 2. Clone the pinned upstream source into a candidate directory
 git clone https://github.com/cloudflare/cloudflare-os.git ../cloudflare-os-candidate
 cd ../cloudflare-os-candidate
-git checkout 1ef6020a42fbabb6d27dd1063db3a075ba95c974
+git checkout af56a9d79d8a60ebed8dabb11b075cd88efc1b87
 
 # 3. Verify patch checksums and apply the patch series
 ( cd "$overlay_dir" && ( command -v sha256sum >/dev/null && sha256sum -c PATCHES.sha256 || shasum -a 256 -c PATCHES.sha256 ) )

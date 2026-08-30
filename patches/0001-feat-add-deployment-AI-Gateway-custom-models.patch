@@ -1,4 +1,4 @@
-From 7beb3e2b6e4763638fc5965efa76acad6d4ada28 Mon Sep 17 00:00:00 2001
+From 34c79a41073a953fb1cdbc372c9a1a5cfef5925e Mon Sep 17 00:00:00 2001
 From: Overlay Maintainer <maintainer@local>
 Date: Sat, 15 Aug 2026 05:47:26 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
@@ -835,19 +835,19 @@ index 06cd6c4..f9d2a51 100644
        (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
    return {
 diff --git a/packages/workshop-backend/src/agent.ts b/packages/workshop-backend/src/agent.ts
-index 95cd619..9212df2 100644
+index 25f150d..5f6a81a 100644
 --- a/packages/workshop-backend/src/agent.ts
 +++ b/packages/workshop-backend/src/agent.ts
 @@ -1,7 +1,7 @@
  import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
- import { applyCodeChange, replaceSpanChange, type CodeContent, type CodeChange }
-   from '@gadgets/workshop-shared/code-change';
+ import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
+   type CodeChange } from '@gadgets/workshop-shared/code-change';
 -import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 +import { PDF_MIME_TYPE } from './chat-attachment-pdf';
  import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
  import { createWorkshopLogger } from "./observability";
  import { Type } from "@earendil-works/pi-ai";
-@@ -1439,8 +1439,7 @@ export async function runAgent(
+@@ -1446,8 +1446,7 @@ export async function runAgent(
                      type: "text",
                      text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
                    }];
@@ -1802,7 +1802,7 @@ index 5eb297e..8787850 100644
      </div>
    )
 diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
-index c7d34b9..599e895 100644
+index 3dfe0ba..faf8f37 100644
 --- a/packages/workshop-shared/src/api.ts
 +++ b/packages/workshop-shared/src/api.ts
 @@ -853,6 +853,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;

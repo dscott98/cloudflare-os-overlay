@@ -2,6 +2,7 @@
 
 | Overlay version | Upstream commit | Status | Notes |
 | --- | --- | --- | --- |
+| `0.1.0-candidate.6` | `af56a9d79d8a60ebed8dabb11b075cd88efc1b87` | candidate | Rebased the deployment AI Gateway custom-model patch onto upstream Workshop scripted agent test suite, parallel integration tests, tool picker scroll fix, and dependency updates; includes 26 upstream commits. |
 | `0.1.0-candidate.5` | `1ef6020a42fbabb6d27dd1063db3a075ba95c974` | candidate | Rebased the deployment AI Gateway custom-model patch onto upstream Git backing storage, OT sync, and CodeMirror editor migration (#275); includes 15 upstream commits. |
 | `0.1.0-candidate.4` | `6478a1448a11524e2f7c2575ad66fab0bc47c433` | candidate | Rebased the deployment AI Gateway custom-model patch onto upstream export, MCP, observability, and AI binding changes; includes 24 upstream commits. |
 | `0.1.0-candidate.2` | `02377767e684aedcbb12f44025cd6331d08b1b50` | candidate | Rebase pin to current upstream; includes dev-server performance improvements (#179), cacheable test tasks (#204), and dependency updates. |
