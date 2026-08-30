@@ -64,7 +64,7 @@ git am --3way "$overlay_dir"/patches/*.patch
 From your reconstructed `cloudflare-os-candidate` directory:
 
 Prerequisites:
-- Node.js 22+
+- Node.js 24+
 - [pnpm](https://pnpm.io/) 11.17.0 (pinned by upstream workspace)
 
 ```sh
