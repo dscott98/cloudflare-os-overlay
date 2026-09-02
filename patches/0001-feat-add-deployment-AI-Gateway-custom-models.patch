@@ -1,4 +1,4 @@
-From 34c79a41073a953fb1cdbc372c9a1a5cfef5925e Mon Sep 17 00:00:00 2001
+From 0f70e15afbcfc4f3d3101d2a278a30684cd8fcc0 Mon Sep 17 00:00:00 2001
 From: Overlay Maintainer <maintainer@local>
 Date: Sat, 15 Aug 2026 05:47:26 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
@@ -14,15 +14,15 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
  DOWNSTREAM.md                                 |  51 +++
  docs/gadgets-implementation-review.md         | 208 +++++++++++
  docs/public-server.md                         |  10 +
- .../__tests__/admin-config.test.ts            |  32 +-
- .../__tests__/ai-models.test.ts               | 118 ++++++
+ .../__tests__/admin-config.test.ts            |  40 +-
+ .../__tests__/ai-models.test.ts               | 144 +++++++
  .../__tests__/user-verifier.test.ts           |  24 ++
- packages/workshop-backend/src/admin-config.ts | 101 ++++-
+ packages/workshop-backend/src/admin-config.ts | 107 +++++-
  .../workshop-backend/src/admin-settings.ts    |  72 +++-
  .../workshop-backend/src/agent-compaction.ts  |   3 +-
  packages/workshop-backend/src/agent.ts        |   5 +-
  packages/workshop-backend/src/ai-gateway.ts   |   4 +-
- packages/workshop-backend/src/ai-models.ts    |  91 ++++-
+ packages/workshop-backend/src/ai-models.ts    | 115 +++++-
  .../src/chat-attachment-pdf.ts                |   4 +-
  .../src/chat-attachment-validation.ts         |   9 +-
  packages/workshop-backend/src/server.ts       |  10 +-
@@ -30,8 +30,8 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
  .../workshop-frontend/src/AddModelModal.tsx   | 149 ++++++--
  .../src/routes/providers.tsx                  |  98 ++++-
  packages/workshop-shared/src/api.ts           |  52 ++-
- plans/ai-gateway-custom-provider-models.md    | 349 ++++++++++++++++++
- 21 files changed, 1405 insertions(+), 85 deletions(-)
+ plans/ai-gateway-custom-provider-models.md    | 350 ++++++++++++++++++
+ 21 files changed, 1470 insertions(+), 85 deletions(-)
  create mode 100644 DOWNSTREAM.md
  create mode 100644 docs/gadgets-implementation-review.md
  create mode 100644 plans/ai-gateway-custom-provider-models.md
@@ -341,7 +341,7 @@ index 8c8f00f..4e36485 100644
  `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
  the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
-index bd74bfc..4174f87 100644
+index bd74bfc..42ad4e0 100644
 --- a/packages/workshop-backend/__tests__/admin-config.test.ts
 +++ b/packages/workshop-backend/__tests__/admin-config.test.ts
 @@ -1,5 +1,5 @@
@@ -351,7 +351,7 @@ index bd74bfc..4174f87 100644
  
  describe("parseAdminConfig", () => {
    it("backfills fields missing from a config persisted before they existed", () => {
-@@ -51,6 +51,36 @@ describe("parseAdminConfig", () => {
+@@ -51,6 +51,44 @@ describe("parseAdminConfig", () => {
    });
  });
  
@@ -365,9 +365,17 @@ index bd74bfc..4174f87 100644
 +  };
 +
 +  it("keeps valid entries and drops malformed or duplicated entries", () => {
++    const responsesModel = {
++      id: "aig-custom:123e4567-e89b-12d3-a456-426614174005",
++      displayName: "GPT 5.6 Sol Gateway",
++      gatewayProviderRoute: "openai",
++      modelId: "gpt-5.6-sol",
++      chatCompletionsPath: "v1/responses",
++    };
 +    let config = parseAdminConfig(JSON.stringify({
 +      aiGatewayCustomModels: [
 +        model,
++        responsesModel,
 +        {...model, displayName: "duplicate ID"},
 +        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174001"},
 +        {...model, id: "aig-custom:123e4567-e89b-12d3-a456-426614174002", chatCompletionsPath: "/v1/chat/completions"},
@@ -377,7 +385,7 @@ index bd74bfc..4174f87 100644
 +      ],
 +    }));
 +
-+    expect(config.aiGatewayCustomModels).toEqual([model]);
++    expect(config.aiGatewayCustomModels).toEqual([model, responsesModel]);
 +    expect(isAiGatewayCustomModelId(model.id)).toBe(true);
 +    expect(isAiGatewayCustomModelId("aig-custom:legacy")).toBe(true);
 +    expect(isAiGatewayCustomModelId("model")).toBe(false);
@@ -389,7 +397,7 @@ index bd74bfc..4174f87 100644
    let promoted = [
      { blueprintId: "a", enabled: true },
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
-index c6e9914..9647ef7 100644
+index c6e9914..7e87133 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
 @@ -32,6 +32,20 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
@@ -413,7 +421,7 @@ index c6e9914..9647ef7 100644
  function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
    return {
      CF_AI_GATEWAY: "platform-gateway",
-@@ -182,6 +196,93 @@ describe("getModel AI Gateway routing", () => {
+@@ -182,6 +196,119 @@ describe("getModel AI Gateway routing", () => {
      });
    }, 15000);
  
@@ -469,6 +477,32 @@ index c6e9914..9647ef7 100644
 +    expect(JSON.parse(request.body).model).toBe("openai/gpt-5.4");
 +  }, 15000);
 +
++  it("routes deployment models using responses or messages endpoints to matching stream handlers", async () => {
++    const responsesHandle = getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "openai",
++      model: "gpt-5.6-sol",
++      chatCompletionsPath: "v1/responses",
++    }, INITIATOR);
++
++    expect(responsesHandle.model.api).toBe("openai-responses");
++    expect(responsesHandle.model.reasoning).toBe(true);
++    expect(responsesHandle.model.baseUrl).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/openai/v1");
++
++    const messagesHandle = getModel(env(), {
++      provider: "ai-gateway-custom",
++      gatewayProviderRoute: "anthropic",
++      model: "claude-sonnet-5",
++      chatCompletionsPath: "v1/messages",
++    }, INITIATOR);
++
++    expect(messagesHandle.model.api).toBe("anthropic-messages");
++    expect(messagesHandle.model.reasoning).toBe(true);
++    expect(messagesHandle.model.baseUrl).toBe(
++        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/anthropic/v1");
++  });
++
 +  it("rejects path traversal attempts in deployment model Chat Completions paths", () => {
 +    expect(() => getModel(env(), {
 +      provider: "ai-gateway-custom",
@@ -507,7 +541,7 @@ index c6e9914..9647ef7 100644
    it("speaks the provider's native API on a connected user's Gateway", async () => {
      const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
        userGateway: { accountId: "user-account-id", apiKey: "user-token" },
-@@ -339,6 +440,23 @@ describe("getModel AI Gateway binding transport", () => {
+@@ -339,6 +466,23 @@ describe("getModel AI Gateway binding transport", () => {
      expect(headerNames).not.toContain("x-api-key");
    }, 15000);
  
@@ -567,7 +601,7 @@ index 3c2dc9e..9b673ed 100644
    it("returns a verifier when the connected account belongs to the expected vendor", async () => {
      const { user, verifier, verifierRequests } = makeUserWithAccount("notion");
 diff --git a/packages/workshop-backend/src/admin-config.ts b/packages/workshop-backend/src/admin-config.ts
-index 81a2b1a..bea70ca 100644
+index 81a2b1a..bf3bda7 100644
 --- a/packages/workshop-backend/src/admin-config.ts
 +++ b/packages/workshop-backend/src/admin-config.ts
 @@ -8,7 +8,7 @@
@@ -597,7 +631,7 @@ index 81a2b1a..bea70ca 100644
  };
  
  /**
-@@ -101,6 +105,100 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+@@ -101,6 +105,106 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
  export const MAX_AGENT_HINT = 400;
  
  // Accept a stored format entry only if it is well-formed.
@@ -673,9 +707,15 @@ index 81a2b1a..bea70ca 100644
 +  if (path.startsWith("/") || path.includes("?") || path.includes("#") || path.includes("%") ||
 +      hasControlCharacters(path)) return false;
 +  let segments = path.split("/");
-+  return segments.length >= 2 &&
-+      segments.every(segment => segment !== "." && segment !== ".." && SAFE_PATH_SEGMENT.test(segment)) &&
-+      segments.at(-2) === "chat" && segments.at(-1) === "completions";
++  if (segments.length < 1 ||
++      segments.some(segment => segment === "." || segment === ".." || !SAFE_PATH_SEGMENT.test(segment))) {
++    return false;
++  }
++  let isChat = segments.length >= 2 && segments.at(-2) === "chat" && segments.at(-1) === "completions";
++  let isResponses = segments.at(-1) === "responses";
++  let isMessages = segments.at(-1) === "messages";
++  let isCompletions = segments.at(-1) === "completions";
++  return isChat || isResponses || isMessages || isCompletions;
 +}
 +
 +function parseAiGatewayCustomModels(value: unknown): AdminAiGatewayCustomModel[] {
@@ -698,7 +738,7 @@ index 81a2b1a..bea70ca 100644
  function parseFormats(value: unknown): FormatCuration[] {
    if (!Array.isArray(value)) return [];
    let formats: FormatCuration[] = [];
-@@ -313,6 +411,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
+@@ -313,6 +417,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
        disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
        ambientGatekeeperModes,
        formats: parseFormats(p.formats),
@@ -877,7 +917,7 @@ index def0930..498581d 100644
              // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
              // reads the real values from env. We set them to empty strings here to satisfy
 diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
-index b1bb2c3..faecf41 100644
+index b1bb2c3..862bba8 100644
 --- a/packages/workshop-backend/src/ai-models.ts
 +++ b/packages/workshop-backend/src/ai-models.ts
 @@ -19,7 +19,10 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
@@ -955,7 +995,7 @@ index b1bb2c3..faecf41 100644
    // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
    // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
    // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
-@@ -375,6 +397,66 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
+@@ -375,6 +397,90 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
    return getModelDirect(config, options.sessionAffinity);
  }
  
@@ -963,12 +1003,36 @@ index b1bb2c3..faecf41 100644
 +    gwConfig: AiGatewayConfig, config: Extract<AiModelConfig, {provider: "ai-gateway-custom"}>,
 +    initiator: AiChatAuthorInfo, options: ModelRoutingOptions): ModelHandle {
 +  let path = config.chatCompletionsPath.split("/");
-+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.gatewayProviderRoute) || path.length < 2 ||
-+      path.at(-2) !== "chat" || path.at(-1) !== "completions" ||
++  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.gatewayProviderRoute) || path.length < 1 ||
 +      path.some(segment => segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) {
 +    throw new Error("Invalid deployment AI Gateway model route.");
 +  }
-+  let prefix = path.slice(0, -2).map(encodeURIComponent).join("/");
++
++  let api: Api;
++  let reasoning = false;
++  let prefixSegments: string[];
++
++  if (path.length >= 2 && path.at(-2) === "chat" && path.at(-1) === "completions") {
++    api = "openai-completions";
++    reasoning = false;
++    prefixSegments = path.slice(0, -2);
++  } else if (path.at(-1) === "responses") {
++    api = "openai-responses";
++    reasoning = true;
++    prefixSegments = path.slice(0, -1);
++  } else if (path.at(-1) === "messages") {
++    api = "anthropic-messages";
++    reasoning = true;
++    prefixSegments = path.slice(0, -1);
++  } else if (path.at(-1) === "completions") {
++    api = "openai-completions";
++    reasoning = false;
++    prefixSegments = path.slice(0, -1);
++  } else {
++    throw new Error("Invalid deployment AI Gateway model route.");
++  }
++
++  let prefix = prefixSegments.map(encodeURIComponent).join("/");
 +  // Custom-provider routes use the same binding passthrough as upstream's native providers.
 +  // A deployment can opt out for a cross-account gateway, in which case HTTPS uses its Run +
 +  // Read token instead. The binding's identity is already scoped to the Worker's own account.
@@ -986,15 +1050,15 @@ index b1bb2c3..faecf41 100644
 +  logger.info("resolved deployment AI Gateway model route", {
 +    event: "ai_gateway.deployment_model.route.resolved",
 +    modelId: config.model,
-+    path: `${baseUrl}/chat/completions`,
++    path: `${baseUrl}/${path.slice(prefixSegments.length).join("/")}`,
 +  });
 +  let model: Model<Api> = {
 +    id: config.model,
 +    name: config.model,
-+    api: "openai-completions",
++    api,
 +    provider: "ai-gateway-custom",
 +    baseUrl,
-+    reasoning: false,
++    reasoning,
 +    input: ["text", "image"],
 +    cost: ZERO_COST,
 +    ...modelTokenWindow(config, undefined),
@@ -1022,7 +1086,7 @@ index b1bb2c3..faecf41 100644
  // Route inference through the user's own account (unified billing) via their account's default AI
  // Gateway. Supports every provider AI Gateway serves, including Workers AI. Billed to the
  // user's Cloudflare credits; no provider API key required.
-@@ -639,9 +721,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
+@@ -639,9 +745,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
          apiKey: config.apiToken,
          sessionAffinity,
        });
@@ -1898,10 +1962,10 @@ index 3dfe0ba..faf8f37 100644
   * model's window, so every Cloudflare model reserves this much of it for the response.
 diff --git a/plans/ai-gateway-custom-provider-models.md b/plans/ai-gateway-custom-provider-models.md
 new file mode 100644
-index 0000000..92184dc
+index 0000000..972b0fb
 --- /dev/null
 +++ b/plans/ai-gateway-custom-provider-models.md
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,350 @@
 +# Deployment-wide AI Gateway custom-provider models
 +
 +## Status
@@ -2013,8 +2077,9 @@ index 0000000..92184dc
 +  // The upstream model identifier sent through that provider.
 +  modelId: string;
 +
-+  // Relative OpenAI Chat Completions endpoint path, e.g. "v1/chat/completions" or
-+  // "v4/chat/completions". This is appended to the provider's Cloudflare-configured base URL.
++  // Relative endpoint path, e.g. "v1/chat/completions", "v1/responses", "v1/messages", or
++  // "v1/completions". This is appended to the provider's Cloudflare-configured base URL and
++  // determines the active stream protocol handler.
 +  chatCompletionsPath: string;
 +};
 +```

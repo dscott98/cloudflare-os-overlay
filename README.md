@@ -34,8 +34,12 @@ Deployment-managed AI Gateway model configuration is integrated natively into th
 
 - **Admin-only configuration**: The dialog and edit/delete controls are visible only to administrators when deployment AI Gateway mode is enabled (`CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, and either the Workers AI binding or `CF_AI_GATEWAY_API_TOKEN`).
 - **User access**: Non-admin users can select and prompt any published model from chat without administrative privileges or API keys.
-- **Protocol compatibility**: Deployment models must speak an **OpenAI-compatible Chat Completions API** (e.g. `v1/chat/completions`). Upstream endpoints requiring proprietary wire protocols (such as Anthropic Messages or Google Vertex native APIs) must be routed through an OpenAI-compatible translation layer or native AI Gateway route.
-- **Unified architecture**: Implements backend storage, authorization, RPC capabilities, AI Gateway proxy routing, and the native Add AI Model dialog UI workflow.
+- **Protocol compatibility**: Deployment models support multiple upstream protocol formats based on the configured endpoint path:
+  - **OpenAI Chat Completions** (`v1/chat/completions` or `chat/completions`): standard chat completion models with multi-turn messages and tool calling.
+  - **OpenAI Responses API** (`v1/responses` or `responses`): models using OpenAI's Responses API format, such as `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`, and OpenAI reasoning models. Automatically activates reasoning effort and native input file payload bridging.
+  - **Anthropic Messages** (`v1/messages` or `messages`): routes to Anthropic Messages stream handling, supporting Anthropic document blocks and extended thinking.
+  - **OpenAI Completions** (`v1/completions` or `completions`): standard prompt completion endpoints.
+- **Unified architecture**: Implements backend storage, authorization, RPC capabilities, AI Gateway proxy routing, dynamic stream protocol resolution, and the native Add AI Model dialog UI workflow.
 
 ---
 
