@@ -20,7 +20,7 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 - **Upstream commit**: [`af56a9d79d8a60ebed8dabb11b075cd88efc1b87`](UPSTREAM.json)
 - **Local delta**: Consolidated patch in [`patches/`](patches/)
 - **Integrity manifest**: [`PATCHES.sha256`](PATCHES.sha256)
-- **Status**: Candidate (`0.1.0-candidate.6` in [RELEASES.md](RELEASES.md))
+- **Status**: Candidate (`0.1.0-candidate.7` in [RELEASES.md](RELEASES.md))
 
 ---
 
