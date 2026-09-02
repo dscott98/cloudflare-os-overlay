@@ -15,6 +15,7 @@ Maintain downstream changes so consumers can independently obtain the upstream s
 - Keep unavoidable upstream edits as small, ordered `git format-patch` files.
 - Never package secrets, credentials, `.dev.vars`, or generated local state.
 - Never auto-deploy an upstream update. This skill prepares a reviewed candidate only.
+- Proactively synchronize and update all repository documentation (`README.md`, `RELEASES.md`, `PATCHES.sha256`, and design docs) with every code or patch change. Never leave version numbers, candidate identifiers, or feature explanations stale or requiring user reminders.
 
 ## Repository layout
 
@@ -48,6 +49,20 @@ git format-patch <upstream-sha> --output-directory ../patches
 ```
 
 Patch commit messages must explain: purpose, affected upstream extension boundary, and why config/Gatekeeper/Blueprint alternatives were insufficient.
+
+## Mandatory Patch & Documentation Synchronization Checklist
+
+Every time a patch is created, updated, or rebased, execute the following steps completely without waiting for user prompting:
+
+1. **Format patches**: Export updated patches into `patches/` from the pinned upstream commit.
+2. **Update checksums**: Regenerate `PATCHES.sha256` (`sha256sum patches/*.patch > PATCHES.sha256`).
+3. **Record candidate/release**: Add a new row to `RELEASES.md` with the new candidate/release version, pinned upstream SHA, status, and concise summary of changes.
+4. **Update `README.md`**:
+   - Update the **Current release candidate** version string in `README.md` to match `RELEASES.md` exactly.
+   - Update all relevant documentation sections in `README.md` (e.g. protocol compatibility, supported models, UI options, setup instructions) to accurately describe newly added or modified capabilities.
+5. **Update internal design/downstream docs**: Update `DOWNSTREAM.md` and any relevant design documents (e.g. `plans/*.md`) included in the patch series.
+6. **Execute full verification**: Run `./scripts/verify-release.sh` to guarantee that the clean submodule, patch application, typechecks, linters, and full test suite pass.
+7. **Commit & Push**: Stage all updated files (`patches/`, `PATCHES.sha256`, `README.md`, `RELEASES.md`, `.agents/`) and commit with an informative message.
 
 ## Verifiable release bundle
 
