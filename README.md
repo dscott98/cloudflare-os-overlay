@@ -26,7 +26,7 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 
 ## Deployment AI Gateway Model Setup
 
-Deployment-managed AI Gateway model configuration is integrated natively into the existing **Add AI Model** dialog. An administrator navigates to **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and provides the upstream model ID, display name, provider route, and relative Chat Completions path.
+Deployment-managed AI Gateway model configuration is integrated natively into the existing **Add AI Model** dialog. An administrator navigates to **AI providers** → **Add provider**, selects **Deployment AI Gateway model**, and provides the upstream model ID, display name, provider route, and relative endpoint path (e.g. `v1/chat/completions`, `v1/responses`, `v1/messages`, or `v1/completions`).
 
 ![Deployment AI Gateway model dialog](docs/ai-gateway-model-dialog.png)
 
@@ -34,12 +34,23 @@ Deployment-managed AI Gateway model configuration is integrated natively into th
 
 - **Admin-only configuration**: The dialog and edit/delete controls are visible only to administrators when deployment AI Gateway mode is enabled (`CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`, and either the Workers AI binding or `CF_AI_GATEWAY_API_TOKEN`).
 - **User access**: Non-admin users can select and prompt any published model from chat without administrative privileges or API keys.
-- **Protocol compatibility**: Deployment models support multiple upstream protocol formats based on the configured endpoint path:
+- **Protocol compatibility & Multi-Endpoint Support**: Deployment models automatically resolve the appropriate streaming and payload protocol based on the configured endpoint path:
   - **OpenAI Chat Completions** (`v1/chat/completions` or `chat/completions`): standard chat completion models with multi-turn messages and tool calling.
-  - **OpenAI Responses API** (`v1/responses` or `responses`): models using OpenAI's Responses API format, such as `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`, and OpenAI reasoning models. Automatically activates reasoning effort and native input file payload bridging.
+  - **OpenAI Responses API / Reasoning Models** (`v1/responses` or `responses`): models using OpenAI's Responses API format, such as `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`, and OpenAI reasoning models (`o1`, `o3-mini`). Automatically activates reasoning effort and native input file payload bridging.
   - **Anthropic Messages** (`v1/messages` or `messages`): routes to Anthropic Messages stream handling, supporting Anthropic document blocks and extended thinking.
   - **OpenAI Completions** (`v1/completions` or `completions`): standard prompt completion endpoints.
 - **Unified architecture**: Implements backend storage, authorization, RPC capabilities, AI Gateway proxy routing, dynamic stream protocol resolution, and the native Add AI Model dialog UI workflow.
+
+---
+
+## Non-Chat & Reasoning Model Support (e.g. GPT-5.6-SOL)
+
+Certain frontier and specialized models—including the **GPT-5.6 family (`gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`)** and specific Cloudflare Workers AI / custom gateway endpoints—do not use the standard OpenAI `/chat/completions` endpoint. Instead, they require the **OpenAI Responses API (`/v1/responses`)** or standard prompt completions (`/v1/completions`).
+
+With this overlay:
+1. **Configuring in Admin UI**: When adding a model like `gpt-5.6-sol` via an AI Gateway route (e.g. `openai` or custom provider), set the endpoint path to `v1/responses`.
+2. **Automatic Protocol Dispatch**: The backend detects `responses` and automatically dispatches to the `openai-responses` stream handler, enabling reasoning effort (`medium` by default), stateless ZDR payload formatting, and encrypted reasoning history propagation across turns.
+3. **Attachment Bridging**: Document and PDF attachments are automatically bridged to native OpenAI `input_file` format rather than being rejected by chat-only image schemas.
 
 ---
 
