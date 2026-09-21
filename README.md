@@ -45,10 +45,10 @@ Deployment-managed AI Gateway model configuration is integrated natively into th
 
 ## Non-Chat & Reasoning Model Support (e.g. GPT-5.6-SOL)
 
-Models already present in upstream's native catalog (including the GPT-5.6 family, GLM models on Workers AI, and Gemini via the Google provider) are routed natively by upstream and need none of this. The deployment AI Gateway model described here is for **custom endpoints not in the native catalog**: models served through a custom provider on the deployment's Cloudflare AI Gateway that do not use the standard OpenAI `/chat/completions` endpoint but instead require the **OpenAI Responses API (`/v1/responses`)** or standard prompt completions (`/v1/completions`).
+Prefer upstream's native model-provider accounts for catalog models. Use deployment AI Gateway models when a deployment needs to publish a shared route, including custom endpoints absent from the native catalog; the supported protocols are listed in [Deployment AI Gateway Model Setup](#deployment-ai-gateway-model-setup). For the Nymbus deployment, use OpenRouter only when necessary, including Gemini if genuinely needed; do not assume a Gemini CLI or a native Google account is available.
 
 With this overlay:
-1. **Configuring in Admin UI**: When adding a model like `gpt-5.6-sol` via an AI Gateway route (e.g. `openai` or custom provider), set the endpoint path to `v1/responses`.
+1. **Configuring in Admin UI**: For a deployment-managed route whose model requires the Responses API, set the endpoint path to `v1/responses`.
 2. **Automatic Protocol Dispatch**: The backend detects `responses` and automatically dispatches to the `openai-responses` stream handler, enabling reasoning effort (`medium` by default), stateless ZDR payload formatting, and encrypted reasoning history propagation across turns.
 3. **Attachment Bridging**: Document and PDF attachments are automatically bridged to native OpenAI `input_file` format rather than being rejected by chat-only image schemas.
 

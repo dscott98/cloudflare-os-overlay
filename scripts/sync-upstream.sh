@@ -86,10 +86,12 @@ ${patch_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=patch_conflict" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
-    echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=patch_conflict"
+      echo "latest_sha=$latest_sha"
+      echo "commit_count=$commit_count"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 101
 fi
@@ -124,9 +126,11 @@ ${lint_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=lint_failure" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=lint_failure"
+      echo "latest_sha=$latest_sha"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 102
 fi
@@ -158,9 +162,11 @@ ${test_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=test_failure" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=test_failure"
+      echo "latest_sha=$latest_sha"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 103
 fi
@@ -195,10 +201,12 @@ ${changelog}
 EOF
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "has_update=true" >> "$GITHUB_OUTPUT"
-  echo "sync_status=success" >> "$GITHUB_OUTPUT"
-  echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
-  echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+  {
+    echo "has_update=true"
+    echo "sync_status=success"
+    echo "latest_sha=$latest_sha"
+    echo "commit_count=$commit_count"
+  } >> "$GITHUB_OUTPUT"
 fi
 
 echo "Upstream sync completed successfully for $latest_sha."
