@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/dscott98/cloudflare-os-overlay/actions/workflows/ci.yml/badge.svg)](https://github.com/dscott98/cloudflare-os-overlay/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Upstream Pin](https://img.shields.io/badge/upstream-af56a9d-orange)](https://github.com/cloudflare/cloudflare-os/tree/af56a9d79d8a60ebed8dabb11b075cd88efc1b87)
+[![Upstream Pin](https://img.shields.io/badge/upstream-bdc5c85-orange)](https://github.com/cloudflare/cloudflare-os/tree/bdc5c85daf5e9c7fc80799c3fe042cd38e25add0)
 
 A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) that adds **deployment-managed custom AI Gateway models** without maintaining a messy, long-lived fork or leaking credentials.
 
@@ -17,10 +17,10 @@ A verifiable, reproducible overlay for [Cloudflare OS](https://github.com/cloudf
 
 ## Current release candidate
 
-- **Upstream commit**: [`af56a9d79d8a60ebed8dabb11b075cd88efc1b87`](UPSTREAM.json)
+- **Upstream commit**: [`bdc5c85daf5e9c7fc80799c3fe042cd38e25add0`](UPSTREAM.json)
 - **Local delta**: Consolidated patch in [`patches/`](patches/)
 - **Integrity manifest**: [`PATCHES.sha256`](PATCHES.sha256)
-- **Status**: Candidate (`0.1.0-candidate.7` in [RELEASES.md](RELEASES.md))
+- **Status**: Candidate (`0.1.0-candidate.8` in [RELEASES.md](RELEASES.md))
 
 ---
 
@@ -45,7 +45,7 @@ Deployment-managed AI Gateway model configuration is integrated natively into th
 
 ## Non-Chat & Reasoning Model Support (e.g. GPT-5.6-SOL)
 
-Certain frontier and specialized models—including the **GPT-5.6 family (`gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.6-terra`)** and specific Cloudflare Workers AI / custom gateway endpoints—do not use the standard OpenAI `/chat/completions` endpoint. Instead, they require the **OpenAI Responses API (`/v1/responses`)** or standard prompt completions (`/v1/completions`).
+Models already present in upstream's native catalog (including the GPT-5.6 family, GLM models on Workers AI, and Gemini via the Google provider) are routed natively by upstream and need none of this. The deployment AI Gateway model described here is for **custom endpoints not in the native catalog**: models served through a custom provider on the deployment's Cloudflare AI Gateway that do not use the standard OpenAI `/chat/completions` endpoint but instead require the **OpenAI Responses API (`/v1/responses`)** or standard prompt completions (`/v1/completions`).
 
 With this overlay:
 1. **Configuring in Admin UI**: When adding a model like `gpt-5.6-sol` via an AI Gateway route (e.g. `openai` or custom provider), set the endpoint path to `v1/responses`.
@@ -67,7 +67,7 @@ overlay_dir=$(pwd)
 # 2. Clone the pinned upstream source into a candidate directory
 git clone https://github.com/cloudflare/cloudflare-os.git ../cloudflare-os-candidate
 cd ../cloudflare-os-candidate
-git checkout af56a9d79d8a60ebed8dabb11b075cd88efc1b87
+git checkout bdc5c85daf5e9c7fc80799c3fe042cd38e25add0
 
 # 3. Verify patch checksums and apply the patch series
 ( cd "$overlay_dir" && ( command -v sha256sum >/dev/null && sha256sum -c PATCHES.sha256 || shasum -a 256 -c PATCHES.sha256 ) )

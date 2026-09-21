@@ -1,4 +1,4 @@
-From 0f70e15afbcfc4f3d3101d2a278a30684cd8fcc0 Mon Sep 17 00:00:00 2001
+From b9b29edde9da3619307ad038733a77a83007a97b Mon Sep 17 00:00:00 2001
 From: Overlay Maintainer <maintainer@local>
 Date: Sat, 15 Aug 2026 05:47:26 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
@@ -11,7 +11,7 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
 - Integration tests and documentation
 ---
  .gitignore                                    |   1 +
- DOWNSTREAM.md                                 |  51 +++
+ DOWNSTREAM.md                                 |  50 +++
  docs/gadgets-implementation-review.md         | 208 +++++++++++
  docs/public-server.md                         |  10 +
  .../__tests__/admin-config.test.ts            |  40 +-
@@ -31,13 +31,13 @@ Adds deployment-managed custom AI Gateway models to Cloudflare OS:
  .../src/routes/providers.tsx                  |  98 ++++-
  packages/workshop-shared/src/api.ts           |  52 ++-
  plans/ai-gateway-custom-provider-models.md    | 350 ++++++++++++++++++
- 21 files changed, 1470 insertions(+), 85 deletions(-)
+ 21 files changed, 1469 insertions(+), 85 deletions(-)
  create mode 100644 DOWNSTREAM.md
  create mode 100644 docs/gadgets-implementation-review.md
  create mode 100644 plans/ai-gateway-custom-provider-models.md
 
 diff --git a/.gitignore b/.gitignore
-index 048d272..2f50d84 100644
+index bfe7c595..9829ab80 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -25,6 +25,7 @@ packages/workshop-backend/src/generated/browser-export-page.js
@@ -50,10 +50,10 @@ index 048d272..2f50d84 100644
  wrangler.prod.jsonc
 diff --git a/DOWNSTREAM.md b/DOWNSTREAM.md
 new file mode 100644
-index 0000000..febf4e8
+index 00000000..c9b5a76a
 --- /dev/null
 +++ b/DOWNSTREAM.md
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,50 @@
 +# Maintaining Cloudflare OS overlay changes
 +
 +This tree incorporates downstream extensions for Cloudflare OS maintained through the [cloudflare-os-overlay](https://github.com/dscott98/cloudflare-os-overlay) repository.
@@ -70,12 +70,11 @@ index 0000000..febf4e8
 +`UPSTREAM.json` records the exact pinned commit of `https://github.com/cloudflare/cloudflare-os.git`.
 +
 +### 2. Patch series
-+The `patches/` directory contains ordered `git format-patch` files:
++
++The `patches/` directory contains the ordered `git format-patch` files. The overlay currently ships one consolidated patch:
 +- `0001-feat-add-deployment-AI-Gateway-custom-models.patch`
-+- `0002-feat-allow-native-AI-Gateway-provider-routes.patch`
-+- `0003-docs-add-fork-maintenance-and-gadget-review.patch`
-+- `0004-fix-hide-deployment-model-editor-without-gateway.patch`
-+- `0005-feat-move-deployment-AI-Gateway-model-setup-into-add-dialog.patch`
++
++(The earlier five-patch series was consolidated into this single patch; any future changes should either extend it or add new numbered patches after it.)
 +
 +Integrity is guaranteed by `PATCHES.sha256`.
 +
@@ -107,7 +106,7 @@ index 0000000..febf4e8
 +7. Re-run `./scripts/verify-release.sh` to confirm full release candidate verification.
 diff --git a/docs/gadgets-implementation-review.md b/docs/gadgets-implementation-review.md
 new file mode 100644
-index 0000000..7910c78
+index 00000000..7910c784
 --- /dev/null
 +++ b/docs/gadgets-implementation-review.md
 @@ -0,0 +1,208 @@
@@ -320,7 +319,7 @@ index 0000000..7910c78
 +- No permissive CORS or disabled TLS-verification patterns found.
 +- Credential-like matches are primarily expected OAuth/configuration/provider code and documentation; this was a quick sweep, not a credential audit.
 diff --git a/docs/public-server.md b/docs/public-server.md
-index 8c8f00f..4e36485 100644
+index 8c8f00f2..4e364853 100644
 --- a/docs/public-server.md
 +++ b/docs/public-server.md
 @@ -63,6 +63,16 @@ binding (the model SDK adapter refuses the binding's fetch — note the platform
@@ -341,17 +340,17 @@ index 8c8f00f..4e36485 100644
  `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
  the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 diff --git a/packages/workshop-backend/__tests__/admin-config.test.ts b/packages/workshop-backend/__tests__/admin-config.test.ts
-index bd74bfc..42ad4e0 100644
+index 3734db30..2c65c2a3 100644
 --- a/packages/workshop-backend/__tests__/admin-config.test.ts
 +++ b/packages/workshop-backend/__tests__/admin-config.test.ts
 @@ -1,5 +1,5 @@
  import { describe, expect, it } from "vitest";
--import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
-+import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, isAiGatewayCustomModelId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+-import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
++import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, isAiGatewayCustomModelId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
  
  describe("parseAdminConfig", () => {
    it("backfills fields missing from a config persisted before they existed", () => {
-@@ -51,6 +51,44 @@ describe("parseAdminConfig", () => {
+@@ -65,6 +65,44 @@ describe("parseAdminConfig", () => {
    });
  });
  
@@ -397,7 +396,7 @@ index bd74bfc..42ad4e0 100644
    let promoted = [
      { blueprintId: "a", enabled: true },
 diff --git a/packages/workshop-backend/__tests__/ai-models.test.ts b/packages/workshop-backend/__tests__/ai-models.test.ts
-index c6e9914..7e87133 100644
+index 2af55474..27bfe372 100644
 --- a/packages/workshop-backend/__tests__/ai-models.test.ts
 +++ b/packages/workshop-backend/__tests__/ai-models.test.ts
 @@ -32,6 +32,20 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
@@ -541,7 +540,7 @@ index c6e9914..7e87133 100644
    it("speaks the provider's native API on a connected user's Gateway", async () => {
      const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
        userGateway: { accountId: "user-account-id", apiKey: "user-token" },
-@@ -339,6 +466,23 @@ describe("getModel AI Gateway binding transport", () => {
+@@ -342,6 +469,23 @@ describe("getModel AI Gateway binding transport", () => {
      expect(headerNames).not.toContain("x-api-key");
    }, 15000);
  
@@ -566,7 +565,7 @@ index c6e9914..7e87133 100644
      // Tests and diagnostics inject options.fetch; it must win over the handle's binding fetch.
      // The URL is the model's, so it still names the binding route -- only the transport swaps.
 diff --git a/packages/workshop-backend/__tests__/user-verifier.test.ts b/packages/workshop-backend/__tests__/user-verifier.test.ts
-index 3c2dc9e..9b673ed 100644
+index 3c2dc9e7..9b673ed0 100644
 --- a/packages/workshop-backend/__tests__/user-verifier.test.ts
 +++ b/packages/workshop-backend/__tests__/user-verifier.test.ts
 @@ -24,6 +24,30 @@ function makeUserWithAccount(vendorId: string) {
@@ -601,7 +600,7 @@ index 3c2dc9e..9b673ed 100644
    it("returns a verifier when the connected account belongs to the expected vendor", async () => {
      const { user, verifier, verifierRequests } = makeUserWithAccount("notion");
 diff --git a/packages/workshop-backend/src/admin-config.ts b/packages/workshop-backend/src/admin-config.ts
-index 81a2b1a..bf3bda7 100644
+index 5f688087..d147d727 100644
 --- a/packages/workshop-backend/src/admin-config.ts
 +++ b/packages/workshop-backend/src/admin-config.ts
 @@ -8,7 +8,7 @@
@@ -613,7 +612,7 @@ index 81a2b1a..bf3bda7 100644
  import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
  import { ADMIN_CONFIG_KEY, BlueprintKvEnv, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive.js";
  
-@@ -54,6 +54,9 @@ export type AdminConfig = {
+@@ -60,6 +60,9 @@ export type AdminConfig = {
     * the deployment offers.
     */
    formats: FormatCuration[];
@@ -623,7 +622,7 @@ index 81a2b1a..bf3bda7 100644
  };
  
  /**
-@@ -91,6 +94,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+@@ -98,6 +101,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
    disabledGatekeepers: [],
    ambientGatekeeperModes: {},
    formats: [],
@@ -631,7 +630,7 @@ index 81a2b1a..bf3bda7 100644
  };
  
  /**
-@@ -101,6 +105,106 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
+@@ -108,6 +112,106 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
  export const MAX_AGENT_HINT = 400;
  
  // Accept a stored format entry only if it is well-formed.
@@ -738,16 +737,16 @@ index 81a2b1a..bf3bda7 100644
  function parseFormats(value: unknown): FormatCuration[] {
    if (!Array.isArray(value)) return [];
    let formats: FormatCuration[] = [];
-@@ -313,6 +417,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
-       disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
-       ambientGatekeeperModes,
-       formats: parseFormats(p.formats),
-+      aiGatewayCustomModels: parseAiGatewayCustomModels(p.aiGatewayCustomModels),
-     };
-   } catch {
-     return { ...DEFAULT_ADMIN_CONFIG };
+@@ -327,6 +431,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
+     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
+     ambientGatekeeperModes,
+     formats: parseFormats(p.formats),
++    aiGatewayCustomModels: parseAiGatewayCustomModels(p.aiGatewayCustomModels),
+   };
+ }
+ 
 diff --git a/packages/workshop-backend/src/admin-settings.ts b/packages/workshop-backend/src/admin-settings.ts
-index ac50456..edfd87d 100644
+index 0c6f5b5e..a3c1602c 100644
 --- a/packages/workshop-backend/src/admin-settings.ts
 +++ b/packages/workshop-backend/src/admin-settings.ts
 @@ -1,4 +1,4 @@
@@ -760,14 +759,14 @@ index ac50456..edfd87d 100644
  import { collection, createTypedStorage } from '@gadgets/typed-storage';
  import { createWorkshopLogger } from "./observability";
  import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, sanitizeBlueprintOutput, serializeFeaturedBlueprints } from './blueprint-archive.js';
--import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
-+import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, isAiGatewayCustomModelId, requireAiGatewayCustomModelInput, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+-import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
++import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, isAiGatewayCustomModelId, listPromotedFormats, normalizeAdminConfig, reorderFormats, requireAiGatewayCustomModelInput, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
  import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 +import { getAiGatewayConfig } from './ai-gateway.js';
  import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
  import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
  import { UserDurableObject } from './user.js';
-@@ -16,6 +17,12 @@ import { FORMAT_BLUEPRINTS } from './generated/format-blueprints.js';
+@@ -16,6 +17,12 @@ import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
  
  const logger = createWorkshopLogger("workshop.admin.settings");
  
@@ -835,7 +834,7 @@ index ac50456..edfd87d 100644
    /**
     * Read all admin-managed settings for the admin UI in one call: the stored config plus the live
     * resource catalog (every bound gatekeeper's resource types annotated with their enabled state).
-@@ -319,6 +374,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
+@@ -320,6 +375,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
        accentColor: config.accentColor,
        resourceVendors: await this.#listResourceConfig(config, adminUserId),
        formats: await this.#listFormatConfig(config),
@@ -843,7 +842,7 @@ index ac50456..edfd87d 100644
      };
    }
  
-@@ -655,4 +711,16 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
+@@ -660,4 +716,16 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
    setFormatOrder(blueprintIds: string[]): Promise<void> {
      return this.admin.setFormatOrder(blueprintIds);
    }
@@ -861,10 +860,10 @@ index ac50456..edfd87d 100644
 +  }
  }
 diff --git a/packages/workshop-backend/src/agent-compaction.ts b/packages/workshop-backend/src/agent-compaction.ts
-index 06cd6c4..f9d2a51 100644
+index 620eca60..5b9198a9 100644
 --- a/packages/workshop-backend/src/agent-compaction.ts
 +++ b/packages/workshop-backend/src/agent-compaction.ts
-@@ -27,7 +27,8 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
+@@ -29,7 +29,8 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
   */
  export function getModelTokenLimits(config: AiModelConfig):
      {inputBudget: number, maxOutputTokens?: number} {
@@ -875,19 +874,19 @@ index 06cd6c4..f9d2a51 100644
        (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
    return {
 diff --git a/packages/workshop-backend/src/agent.ts b/packages/workshop-backend/src/agent.ts
-index 25f150d..5f6a81a 100644
+index 1e127bd8..f6214ec0 100644
 --- a/packages/workshop-backend/src/agent.ts
 +++ b/packages/workshop-backend/src/agent.ts
 @@ -1,7 +1,7 @@
- import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, ChatCodeBase, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+ import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
  import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
-   type CodeChange } from '@gadgets/workshop-shared/code-change';
+   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 -import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 +import { PDF_MIME_TYPE } from './chat-attachment-pdf';
  import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
  import { createWorkshopLogger } from "./observability";
  import { Type } from "@earendil-works/pi-ai";
-@@ -1446,8 +1446,7 @@ export async function runAgent(
+@@ -1786,8 +1786,7 @@ async function runAgentPass(
                      type: "text",
                      text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
                    }];
@@ -898,16 +897,17 @@ index 25f150d..5f6a81a 100644
                    // the model handle rewrites it into the provider's native document block just
                    // before the request goes out (see chat-attachment-pdf.ts). The text part
 diff --git a/packages/workshop-backend/src/ai-gateway.ts b/packages/workshop-backend/src/ai-gateway.ts
-index def0930..498581d 100644
+index 24e11977..b4ce14cd 100644
 --- a/packages/workshop-backend/src/ai-gateway.ts
 +++ b/packages/workshop-backend/src/ai-gateway.ts
-@@ -1,4 +1,4 @@
--import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
-+import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
+@@ -1,5 +1,5 @@
+ import {
+-  AiChatAuthorInfo, AiModelConfig, HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
++  AiChatAuthorInfo, AiModelConfig, AiModelProvider, HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
+ } from "@gadgets/workshop-shared/api";
  import { UserAiModelRecord } from "./user.js";
  
- // The model used for quick tasks like title generation when AI Gateway mode is active.
-@@ -119,7 +119,7 @@ export class AiGatewayConfig {
+@@ -106,7 +106,7 @@ export class AiGatewayConfig {
          return {
            profile: { type: "agent", id: modelId, name: models[modelId].name },
            config: {
@@ -917,7 +917,7 @@ index def0930..498581d 100644
              // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
              // reads the real values from env. We set them to empty strings here to satisfy
 diff --git a/packages/workshop-backend/src/ai-models.ts b/packages/workshop-backend/src/ai-models.ts
-index b1bb2c3..862bba8 100644
+index b1bb2c3e..862bba8e 100644
 --- a/packages/workshop-backend/src/ai-models.ts
 +++ b/packages/workshop-backend/src/ai-models.ts
 @@ -19,7 +19,10 @@ import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LI
@@ -1099,7 +1099,7 @@ index b1bb2c3..862bba8 100644
  }
  
 diff --git a/packages/workshop-backend/src/chat-attachment-pdf.ts b/packages/workshop-backend/src/chat-attachment-pdf.ts
-index 17c37fb..9c165fc 100644
+index 17c37fb1..9c165fca 100644
 --- a/packages/workshop-backend/src/chat-attachment-pdf.ts
 +++ b/packages/workshop-backend/src/chat-attachment-pdf.ts
 @@ -17,7 +17,9 @@ import type { Api } from "@earendil-works/pi-ai";
@@ -1114,7 +1114,7 @@ index 17c37fb..9c165fc 100644
  // Drop this bridge if pi gains a first-class document content type (upstream ask filed; see
  // plans/pi-impl.md §8).
 diff --git a/packages/workshop-backend/src/chat-attachment-validation.ts b/packages/workshop-backend/src/chat-attachment-validation.ts
-index 4f236a6..6f2c4e5 100644
+index 4f236a67..6f2c4e50 100644
 --- a/packages/workshop-backend/src/chat-attachment-validation.ts
 +++ b/packages/workshop-backend/src/chat-attachment-validation.ts
 @@ -1,5 +1,5 @@
@@ -1146,10 +1146,10 @@ index 4f236a6..6f2c4e5 100644
    byteLength: number,
  ): void {
 diff --git a/packages/workshop-backend/src/server.ts b/packages/workshop-backend/src/server.ts
-index 042b8bc..6832711 100644
+index 5911ab2a..8356c817 100644
 --- a/packages/workshop-backend/src/server.ts
 +++ b/packages/workshop-backend/src/server.ts
-@@ -197,15 +197,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
+@@ -223,15 +223,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
      return new Uint8Array(result);
    }
  
@@ -1172,7 +1172,7 @@ index 042b8bc..6832711 100644
    }
  
 diff --git a/packages/workshop-backend/src/user.ts b/packages/workshop-backend/src/user.ts
-index 5ad4a23..b3ae11c 100644
+index 016b12dc..94511b93 100644
 --- a/packages/workshop-backend/src/user.ts
 +++ b/packages/workshop-backend/src/user.ts
 @@ -10,7 +10,7 @@ import { getAiGatewayConfig } from "./ai-gateway.js";
@@ -1182,9 +1182,9 @@ index 5ad4a23..b3ae11c 100644
 -import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 +import { filterEnabledResources, isAiGatewayCustomModelId, isResourceDisabled, readAdminConfig } from "./admin-config.js";
  import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+ import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
  
- const logger = createWorkshopLogger("workshop.user");
-@@ -77,6 +77,19 @@ export type UserChatContext = {
+@@ -103,6 +103,19 @@ export type UserChatContext = {
    quickModel?: AiModelConfig;
  }
  
@@ -1204,8 +1204,8 @@ index 5ad4a23..b3ae11c 100644
  type LoginSessionRecord = {
    tokenId: string,  // sha256 hash of token, hex-formatted
    created: Date,
-@@ -525,10 +538,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
-     this.storage.profile.put(profile);
+@@ -587,10 +600,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+     this.#syncDirectory();
    }
  
 +  async #deploymentCustomModels(): Promise<UserAiModelRecord[]> {
@@ -1227,7 +1227,7 @@ index 5ad4a23..b3ae11c 100644
      let gwConfig = getAiGatewayConfig(this.env);
      let gwModelIds = new Set<string>();
      if (gwConfig) {
-@@ -536,11 +560,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -598,11 +622,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
          result.push(entry);
          gwModelIds.add(entry.id);
        }
@@ -1244,7 +1244,7 @@ index 5ad4a23..b3ae11c 100644
          result.push(model.profile);
        }
      }
-@@ -548,6 +576,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -610,6 +638,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    }
  
    async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
@@ -1254,7 +1254,7 @@ index 5ad4a23..b3ae11c 100644
      let gwConfig = getAiGatewayConfig(this.env);
      if (gwConfig && !gwConfig.providers.has(config.provider)) {
        throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
-@@ -558,6 +589,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -620,6 +651,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    }
  
    async deleteModel(id: string): Promise<void> {
@@ -1264,7 +1264,7 @@ index 5ad4a23..b3ae11c 100644
      // In AI Gateway mode, don't allow deleting built-in suggested models.
      let gwConfig = getAiGatewayConfig(this.env);
      if (gwConfig) {
-@@ -572,16 +606,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -634,16 +668,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    }
  
    async setQuickModel(id: string | null): Promise<void> {
@@ -1291,7 +1291,7 @@ index 5ad4a23..b3ae11c 100644
    }
  
    async getPreferredModel(): Promise<string | null> {
-@@ -590,9 +631,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -652,9 +693,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
  
    async setPreferredModel(id: string | null): Promise<void> {
      if (id !== null) {
@@ -1305,7 +1305,7 @@ index 5ad4a23..b3ae11c 100644
        if (!exists) {
          throw new Error(`No such model: ${id}`);
        }
-@@ -700,33 +742,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+@@ -762,33 +804,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
        profile: this.storage.profile.get()
      };
      if (modelId) {
@@ -1365,7 +1365,7 @@ index 5ad4a23..b3ae11c 100644
      // Prefer the existing chat's model, then the user's preferred model, then the first available model.
      let selectedModel = models.find(model => model.id === existingChatModelId)
 diff --git a/packages/workshop-frontend/src/AddModelModal.tsx b/packages/workshop-frontend/src/AddModelModal.tsx
-index 2f0529e..ab192c2 100644
+index 2f0529e1..ab192c2e 100644
 --- a/packages/workshop-frontend/src/AddModelModal.tsx
 +++ b/packages/workshop-frontend/src/AddModelModal.tsx
 @@ -1,6 +1,15 @@
@@ -1672,7 +1672,7 @@ index 2f0529e..ab192c2 100644
          </div>
        </Dialog>
 diff --git a/packages/workshop-frontend/src/routes/providers.tsx b/packages/workshop-frontend/src/routes/providers.tsx
-index 5eb297e..8787850 100644
+index 5eb297e4..87878504 100644
 --- a/packages/workshop-frontend/src/routes/providers.tsx
 +++ b/packages/workshop-frontend/src/routes/providers.tsx
 @@ -1,8 +1,11 @@
@@ -1866,10 +1866,10 @@ index 5eb297e..8787850 100644
      </div>
    )
 diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
-index 3dfe0ba..faf8f37 100644
+index 04b2d934..57a87fa1 100644
 --- a/packages/workshop-shared/src/api.ts
 +++ b/packages/workshop-shared/src/api.ts
-@@ -853,6 +853,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
+@@ -933,6 +933,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
  /** Maximum width or height of an admin-uploaded site logo in pixels. */
  export const MAX_SITE_LOGO_DIMENSION = 512;
  
@@ -1896,7 +1896,7 @@ index 3dfe0ba..faf8f37 100644
  /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
  export type AdminSettingsView = {
    /** Whether new account signups are allowed. */
-@@ -873,6 +893,8 @@ export type AdminSettingsView = {
+@@ -955,6 +975,8 @@ export type AdminSettingsView = {
    resourceVendors: AdminResourceVendor[];
    /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
    formats: AdminFormat[];
@@ -1905,7 +1905,7 @@ index 3dfe0ba..faf8f37 100644
  };
  
  /**
-@@ -1020,6 +1042,15 @@ export interface AdminApi {
+@@ -1108,6 +1130,15 @@ export interface AdminApi {
  
    /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
    setFormatOrder(blueprintIds: string[]): Promise<void>;
@@ -1921,7 +1921,7 @@ index 3dfe0ba..faf8f37 100644
  }
  
  /** A partial edit to one promoted format. Absent fields are left alone. */
-@@ -1143,12 +1174,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
+@@ -1238,12 +1269,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
  export type AiGatewayInfo = {
    enabled: true;
    enabledProviders: AiModelProvider[];
@@ -1938,7 +1938,7 @@ index 3dfe0ba..faf8f37 100644
    /** Which AI provider hosts the model? */
    provider: AiModelProvider;
  
-@@ -1172,6 +1205,21 @@ export type AiModelConfig = {
+@@ -1267,6 +1300,21 @@ export type AiModelConfig = {
    apiUrl?: string;
  };
  
@@ -1962,7 +1962,7 @@ index 3dfe0ba..faf8f37 100644
   * model's window, so every Cloudflare model reserves this much of it for the response.
 diff --git a/plans/ai-gateway-custom-provider-models.md b/plans/ai-gateway-custom-provider-models.md
 new file mode 100644
-index 0000000..972b0fb
+index 00000000..972b0fb5
 --- /dev/null
 +++ b/plans/ai-gateway-custom-provider-models.md
 @@ -0,0 +1,350 @@
