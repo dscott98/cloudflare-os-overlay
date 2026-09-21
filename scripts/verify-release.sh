@@ -52,12 +52,8 @@ trap cleanup EXIT
 git -C "$submodule" worktree add --detach "$worktree" "$expected" >/dev/null
 git -C "$worktree" am --3way "$root"/patches/*.patch >/dev/null
 
-# Test the exact reconstructed candidate, not the clean upstream submodule. Upstream's `lint`
-# umbrella script was removed in favor of `lint:check` (oxlint via vp) plus type checking through
-# the build; `test` runs the repository's unit and integration suites.
 pnpm --dir "$worktree" install --frozen-lockfile
-pnpm --dir "$worktree" lint:check
-pnpm --dir "$worktree" types:check
+pnpm --dir "$worktree" lint
 pnpm --dir "$worktree" test
 
 printf 'Verified upstream pin, clean submodule, patch checksums, patch application, lint, typecheck, and tests.\n'

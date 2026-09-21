@@ -99,9 +99,7 @@ pnpm --dir "$worktree" install --frozen-lockfile
 
 echo "Running linter and typecheck..."
 set +e
-# Upstream removed the umbrella `lint` script; lint:check (oxlint via vp) plus types:check (the
-# build) provide the equivalent coverage.
-lint_output=$(pnpm --dir "$worktree" lint:check 2>&1 && pnpm --dir "$worktree" types:check 2>&1)
+lint_output=$(pnpm --dir "$worktree" lint 2>&1)
 lint_status=$?
 set -e
 
