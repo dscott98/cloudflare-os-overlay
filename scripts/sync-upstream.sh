@@ -86,10 +86,12 @@ ${patch_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=patch_conflict" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
-    echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=patch_conflict"
+      echo "latest_sha=$latest_sha"
+      echo "commit_count=$commit_count"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 101
 fi
@@ -124,9 +126,11 @@ ${lint_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=lint_failure" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=lint_failure"
+      echo "latest_sha=$latest_sha"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 102
 fi
@@ -158,56 +162,22 @@ ${test_output}
 EOF
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "has_update=true" >> "$GITHUB_OUTPUT"
-    echo "sync_status=test_failure" >> "$GITHUB_OUTPUT"
-    echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
+    {
+      echo "has_update=true"
+      echo "sync_status=test_failure"
+      echo "latest_sha=$latest_sha"
+    } >> "$GITHUB_OUTPUT"
   fi
   exit 103
 fi
 
 echo "Candidate passed all checks! Updating pin..."
 
-# Update UPSTREAM.json, README.md, and RELEASES.md
-node -e "
-  const fs = require('fs');
-  const root = '$root';
-  const prevSha = '$current_pin';
-  const newSha = '$latest_sha';
-  const prevShort = prevSha.slice(0, 7);
-  const newShort = newSha.slice(0, 7);
-  const commitCount = $commit_count;
-  const today = new Date().toISOString().slice(0, 10);
-
-  // 1. Update UPSTREAM.json
-  const upstreamPath = root + '/UPSTREAM.json';
-  const upstreamData = JSON.parse(fs.readFileSync(upstreamPath, 'utf8'));
-  upstreamData.commit = newSha;
-  fs.writeFileSync(upstreamPath, JSON.stringify(upstreamData, null, 2) + '\n');
-
-  // 2. Compute candidate version from RELEASES.md
-  const releasesPath = root + '/RELEASES.md';
-  let releases = fs.readFileSync(releasesPath, 'utf8');
-  const candidateMatch = releases.match(/0\.1\.0-candidate\.(\d+)/);
-  const nextNum = candidateMatch ? parseInt(candidateMatch[1], 10) + 1 : 1;
-  const newCandidateVersion = '0.1.0-candidate.' + nextNum;
-
-  // Prepend new candidate entry to RELEASES table
-  const newRow = '| \`' + newCandidateVersion + '\` | \`' + newSha + '\` | candidate | Automated upstream sync (' + today + ', ' + commitCount + ' new commits). |';
-  releases = releases.replace(
-    /(| --- \| --- \| --- \| --- \|\n)/,
-    '\$1' + newRow + '\n'
-  );
-  fs.writeFileSync(releasesPath, releases);
-
-  // 3. Update README.md (badges, commit links, candidate version)
-  const readmePath = root + '/README.md';
-  let readme = fs.readFileSync(readmePath, 'utf8');
-  readme = readme
-    .replace(new RegExp('upstream-' + prevShort, 'g'), 'upstream-' + newShort)
-    .replace(new RegExp(prevSha, 'g'), newSha)
-    .replace(/Candidate \(\`0\.1\.0-candidate\.\d+\` in/, 'Candidate (\`' + newCandidateVersion + '\` in');
-  fs.writeFileSync(readmePath, readme);
-"
+# Update UPSTREAM.json, README.md, and RELEASES.md via the tested release-docs module.
+# (scripts/lib/apply-pin-docs.mjs inserts the new candidate row directly under the RELEASES.md
+# table header; the previous inline implementation put it above the page heading.)
+node "$root/scripts/lib/apply-pin-docs.mjs" \
+  --root "$root" --prev-sha "$current_pin" --new-sha "$latest_sha" --commit-count "$commit_count"
 
 # Update submodule pointer
 git -C "$submodule" checkout --quiet "$latest_sha"
@@ -231,10 +201,12 @@ ${changelog}
 EOF
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "has_update=true" >> "$GITHUB_OUTPUT"
-  echo "sync_status=success" >> "$GITHUB_OUTPUT"
-  echo "latest_sha=$latest_sha" >> "$GITHUB_OUTPUT"
-  echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+  {
+    echo "has_update=true"
+    echo "sync_status=success"
+    echo "latest_sha=$latest_sha"
+    echo "commit_count=$commit_count"
+  } >> "$GITHUB_OUTPUT"
 fi
 
 echo "Upstream sync completed successfully for $latest_sha."
