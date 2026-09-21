@@ -99,7 +99,9 @@ pnpm --dir "$worktree" install --frozen-lockfile
 
 echo "Running linter and typecheck..."
 set +e
-lint_output=$(pnpm --dir "$worktree" lint 2>&1)
+# Upstream removed the umbrella `lint` script; lint:check (oxlint via vp) plus types:check (the
+# build) provide the equivalent coverage.
+lint_output=$(pnpm --dir "$worktree" lint:check 2>&1 && pnpm --dir "$worktree" types:check 2>&1)
 lint_status=$?
 set -e
 
@@ -167,47 +169,11 @@ fi
 
 echo "Candidate passed all checks! Updating pin..."
 
-# Update UPSTREAM.json, README.md, and RELEASES.md
-node -e "
-  const fs = require('fs');
-  const root = '$root';
-  const prevSha = '$current_pin';
-  const newSha = '$latest_sha';
-  const prevShort = prevSha.slice(0, 7);
-  const newShort = newSha.slice(0, 7);
-  const commitCount = $commit_count;
-  const today = new Date().toISOString().slice(0, 10);
-
-  // 1. Update UPSTREAM.json
-  const upstreamPath = root + '/UPSTREAM.json';
-  const upstreamData = JSON.parse(fs.readFileSync(upstreamPath, 'utf8'));
-  upstreamData.commit = newSha;
-  fs.writeFileSync(upstreamPath, JSON.stringify(upstreamData, null, 2) + '\n');
-
-  // 2. Compute candidate version from RELEASES.md
-  const releasesPath = root + '/RELEASES.md';
-  let releases = fs.readFileSync(releasesPath, 'utf8');
-  const candidateMatch = releases.match(/0\.1\.0-candidate\.(\d+)/);
-  const nextNum = candidateMatch ? parseInt(candidateMatch[1], 10) + 1 : 1;
-  const newCandidateVersion = '0.1.0-candidate.' + nextNum;
-
-  // Prepend new candidate entry to RELEASES table
-  const newRow = '| \`' + newCandidateVersion + '\` | \`' + newSha + '\` | candidate | Automated upstream sync (' + today + ', ' + commitCount + ' new commits). |';
-  releases = releases.replace(
-    /(| --- \| --- \| --- \| --- \|\n)/,
-    '\$1' + newRow + '\n'
-  );
-  fs.writeFileSync(releasesPath, releases);
-
-  // 3. Update README.md (badges, commit links, candidate version)
-  const readmePath = root + '/README.md';
-  let readme = fs.readFileSync(readmePath, 'utf8');
-  readme = readme
-    .replace(new RegExp('upstream-' + prevShort, 'g'), 'upstream-' + newShort)
-    .replace(new RegExp(prevSha, 'g'), newSha)
-    .replace(/Candidate \(\`0\.1\.0-candidate\.\d+\` in/, 'Candidate (\`' + newCandidateVersion + '\` in');
-  fs.writeFileSync(readmePath, readme);
-"
+# Update UPSTREAM.json, README.md, and RELEASES.md via the tested release-docs module.
+# (scripts/lib/apply-pin-docs.mjs inserts the new candidate row directly under the RELEASES.md
+# table header; the previous inline implementation put it above the page heading.)
+node "$root/scripts/lib/apply-pin-docs.mjs" \
+  --root "$root" --prev-sha "$current_pin" --new-sha "$latest_sha" --commit-count "$commit_count"
 
 # Update submodule pointer
 git -C "$submodule" checkout --quiet "$latest_sha"

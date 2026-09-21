@@ -22,12 +22,15 @@ jobs:
         with:
           version: 11.17.0
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js 24.19.0 (matches upstream CI)
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.19.0
           cache: 'pnpm'
           cache-dependency-path: 'cloudflare-os/pnpm-lock.yaml'
+
+      - name: Test overlay scripts
+        run: node --test scripts/lib/*.test.mjs
 
       - name: Verify release candidate
         env:
