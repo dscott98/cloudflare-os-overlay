@@ -1,6 +1,6 @@
-From b9b29edde9da3619307ad038733a77a83007a97b Mon Sep 17 00:00:00 2001
-From: Overlay Maintainer <maintainer@local>
-Date: Sat, 15 Aug 2026 05:47:26 -0700
+From 404a92b0f898fcb426b897e3c3ad9e6275c64233 Mon Sep 17 00:00:00 2001
+From: Overlay Maintainer <overlay@local>
+Date: Mon, 21 Sep 2026 18:08:02 -0700
 Subject: [PATCH] feat: add deployment AI Gateway custom models
 
 Adds deployment-managed custom AI Gateway models to Cloudflare OS:
@@ -1866,10 +1866,10 @@ index 5eb297e4..87878504 100644
      </div>
    )
 diff --git a/packages/workshop-shared/src/api.ts b/packages/workshop-shared/src/api.ts
-index 04b2d934..57a87fa1 100644
+index d2c9aac6..abdc87ea 100644
 --- a/packages/workshop-shared/src/api.ts
 +++ b/packages/workshop-shared/src/api.ts
-@@ -933,6 +933,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
+@@ -939,6 +939,26 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
  /** Maximum width or height of an admin-uploaded site logo in pixels. */
  export const MAX_SITE_LOGO_DIMENSION = 512;
  
@@ -1896,7 +1896,7 @@ index 04b2d934..57a87fa1 100644
  /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
  export type AdminSettingsView = {
    /** Whether new account signups are allowed. */
-@@ -955,6 +975,8 @@ export type AdminSettingsView = {
+@@ -961,6 +981,8 @@ export type AdminSettingsView = {
    resourceVendors: AdminResourceVendor[];
    /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
    formats: AdminFormat[];
@@ -1905,7 +1905,7 @@ index 04b2d934..57a87fa1 100644
  };
  
  /**
-@@ -1108,6 +1130,15 @@ export interface AdminApi {
+@@ -1114,6 +1136,15 @@ export interface AdminApi {
  
    /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
    setFormatOrder(blueprintIds: string[]): Promise<void>;
@@ -1921,7 +1921,7 @@ index 04b2d934..57a87fa1 100644
  }
  
  /** A partial edit to one promoted format. Absent fields are left alone. */
-@@ -1238,12 +1269,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
+@@ -1244,12 +1275,14 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
  export type AiGatewayInfo = {
    enabled: true;
    enabledProviders: AiModelProvider[];
@@ -1938,7 +1938,7 @@ index 04b2d934..57a87fa1 100644
    /** Which AI provider hosts the model? */
    provider: AiModelProvider;
  
-@@ -1267,6 +1300,21 @@ export type AiModelConfig = {
+@@ -1273,6 +1306,21 @@ export type AiModelConfig = {
    apiUrl?: string;
  };
  
