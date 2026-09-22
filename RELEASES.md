@@ -11,4 +11,10 @@
 | `0.1.0-candidate.2` | `02377767e684aedcbb12f44025cd6331d08b1b50` | candidate | Rebase pin to current upstream; includes dev-server performance improvements (#179), cacheable test tasks (#204), and dependency updates. |
 | `0.1.0-candidate.1` | `d0cffe48914adff8b296f596137a8809bde89568` | candidate | Custom AI Gateway model and native-provider routing changes; consolidated patch including Add AI Model dialog management for deployment models. |
 
+### Candidate.9 live-test result
+
+User-reported data-plane validation against `gateway.ai.cloudflare.com` succeeded using `cf-aig-authorization` (not `Authorization`): `/v1/{account}/{gateway}/compat/chat/completions` returned HTTP 200 for `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, producing the one-token response "How". A cross-model check passed for `@cf/meta/llama-3.2-3b-instruct`. `@cf/google/gemma-3-12b-it` returned HTTP 403 due to the account allow-list, not authentication. No secrets were printed, copied, or persisted, and no Cloudflare configuration was changed.
+
+Live admin persistence and non-admin configuration/credential isolation were not exercised: no deployed Workshop instance exists in this worktree, and starter checkout, resource creation, and deployment remain downstream work. The user supplied prior `./scripts/verify-release.sh` results against the new pin as evidence for these boundaries: `admin-config.test.ts`, `ai-models.test.ts`, and `user-verifier.test.ts` coverage; 51 unit-test files / 850 passed, plus 2 integration-test files / 5 passed and 4 skipped, with zero failures. These results were not rerun in this evidence-recording phase. OpenAI/Anthropic protocol behavior and remaining provider-specific routes remain captain-accepted assumptions per `firstmate 005.msg`, not live-verified results.
+
 A production entry requires a published bundle checksum, detached signature, public-key location, and successful test evidence.
